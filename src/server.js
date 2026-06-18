@@ -27,6 +27,27 @@ app.use(express.json({ limit: '1mb' }));
 const challenges = new Map();
 let browserPromise;
 
+function logChallenge(challengeId, message, details = {}) {
+  const suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : '';
+  console.log(`[challenge:${challengeId}] ${message}${suffix}`);
+}
+
+function summarizeCaptchaUrl(captchaUrl) {
+  try {
+    const url = new URL(captchaUrl);
+    return {
+      origin: url.origin,
+      path: url.pathname,
+      domain: url.searchParams.get('domain'),
+      variant: url.searchParams.get('variant'),
+      blank: url.searchParams.get('blank'),
+      hasSessionToken: url.searchParams.has('session_token')
+    };
+  } catch (error) {
+    return { invalid: true, error: error.message };
+  }
+}
+
 function getBrowser() {
   if (!browserPromise) {
     browserPromise = chromium.launch({
@@ -46,6 +67,12 @@ function getBrowser() {
 function publicChallengeUrl(challengeId) {
   const path = `/operator/${encodeURIComponent(challengeId)}`;
   return config.operatorViewBaseUrl ? `${config.operatorViewBaseUrl.replace(/\/$/, '')}${path}` : path;
+}
+
+function operatorFollowUrl(challengeId) {
+  const path = `/operator/${encodeURIComponent(challengeId)}`;
+  const baseUrl = config.operatorViewBaseUrl || `http://127.0.0.1:${config.port}`;
+  return `${baseUrl.replace(/\/$/, '')}${path}`;
 }
 
 async function postCallback(callbackUrl, body) {
@@ -100,32 +127,82 @@ function captureTokenFromResponse(state, response) {
   const url = response.url();
   if (!url.includes('/method/captchaNotRobot.check')) return;
 
+  logChallenge(state.challengeId, 'captcha check response received', {
+    status: response.status()
+  });
+
   response
     .json()
     .then((payload) => {
       const token = extractSuccessToken(payload);
+      logChallenge(state.challengeId, 'captcha check response parsed', {
+        tokenAvailable: Boolean(token),
+        alreadyCaptured: Boolean(state.token)
+      });
       if (!token || state.token) return;
       state.token = token;
+      logChallenge(state.challengeId, 'success token captured');
       for (const waiter of state.tokenWaiters) waiter(token);
     })
-    .catch(() => undefined);
+    .catch((error) => {
+      logChallenge(state.challengeId, 'captcha check response parse failed', { error: error.message });
+    });
 }
 
-async function clickCheckbox(page) {
+async function clickCheckbox(state) {
+  const { page, challengeId } = state;
   const checkbox = page.locator('#not-robot-captcha-checkbox').first();
   if (await checkbox.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await checkbox.click({ delay: 120 });
-    return;
+    const box = await checkbox.boundingBox().catch(() => undefined);
+    logChallenge(challengeId, 'autoclick target found', {
+      strategy: 'checkbox-selector',
+      box
+    });
+    if (box) {
+      const x = Math.round(box.x + Math.min(22, box.width / 2));
+      const y = Math.round(box.y + box.height / 2);
+      logChallenge(challengeId, 'autoclick using detected checkbox coordinates', { strategy: 'checkbox-selector', x, y });
+      await page.mouse.click(x, y, { delay: 120 });
+    } else {
+      await checkbox.click({ delay: 120, timeout: 3000, force: true });
+    }
+    logChallenge(challengeId, 'autoclick completed', { strategy: 'checkbox-selector' });
+    return 'checkbox-selector';
   }
+  logChallenge(challengeId, 'autoclick checkbox selector not visible');
 
   const label = page.getByText(/я не робот|i'?m not a robot|i am not a robot/i).first();
   if (await label.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await label.click({ delay: 120 });
-    return;
+    const box = await label.boundingBox().catch(() => undefined);
+    logChallenge(challengeId, 'autoclick target found', {
+      strategy: 'label-text',
+      box
+    });
+    if (box) {
+      const x = Math.round(box.x + Math.min(22, box.width / 2));
+      const y = Math.round(box.y + box.height / 2);
+      logChallenge(challengeId, 'autoclick using detected label coordinates', { strategy: 'label-text', x, y });
+      await page.mouse.click(x, y, { delay: 120 });
+    } else {
+      await label.click({ delay: 120, timeout: 3000, force: true });
+    }
+    logChallenge(challengeId, 'autoclick completed', { strategy: 'label-text' });
+    return 'label-text';
   }
+  logChallenge(challengeId, 'autoclick label text not visible');
 
   const viewport = page.viewportSize() || { width: config.viewportWidth, height: config.viewportHeight };
-  await page.mouse.click(Math.round(viewport.width / 2 - 55), Math.round(viewport.height / 2 + 80), { delay: 120 });
+  const x = Math.round(viewport.width / 2 - 55);
+  const y = Math.round(viewport.height / 2 + 80);
+  logChallenge(challengeId, 'autoclick using fallback coordinate', {
+    strategy: 'fallback-coordinate',
+    viewport,
+    x,
+    y
+  });
+  await page.mouse.click(x, y, { delay: 120 });
+  logChallenge(challengeId, 'autoclick completed', { strategy: 'fallback-coordinate' });
+  return 'fallback-coordinate';
 }
 
 async function updateScreenshot(state) {
@@ -148,8 +225,15 @@ async function finishChallenge(state, payload) {
   state.done = true;
   if (state.screenshotTimer) clearInterval(state.screenshotTimer);
 
+  logChallenge(state.challengeId, 'finishing challenge', {
+    status: payload.status,
+    tokenAvailable: Boolean(payload.token),
+    error: payload.error
+  });
+
   try {
     await postCallback(state.callbackUrl, { challengeId: state.challengeId, ...payload });
+    logChallenge(state.challengeId, 'callback posted', { status: payload.status });
   } finally {
     await state.page?.close().catch(() => undefined);
     challenges.delete(state.challengeId);
@@ -157,6 +241,13 @@ async function finishChallenge(state, payload) {
 }
 
 async function solveChallenge({ challengeId, captchaUrl, callbackUrl }) {
+  logChallenge(challengeId, 'challenge accepted', {
+    captchaUrl: summarizeCaptchaUrl(captchaUrl),
+    autosolveDelayMs: config.autosolveDelayMs,
+    autosolveTimeoutMs: config.autosolveTimeoutMs,
+    operatorTimeoutMs: config.operatorTimeoutMs
+  });
+
   const browser = await getBrowser();
   const context = await browser.newContext({
     userAgent: config.userAgent,
@@ -180,13 +271,26 @@ async function solveChallenge({ challengeId, captchaUrl, callbackUrl }) {
   page.on('response', (response) => captureTokenFromResponse(state, response));
 
   try {
-    await page.goto(captchaUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    logChallenge(challengeId, 'navigating to captcha');
+    const navigationResponse = await page.goto(captchaUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    logChallenge(challengeId, 'captcha navigation completed', {
+      status: navigationResponse?.status(),
+      finalUrl: summarizeCaptchaUrl(page.url())
+    });
+    logChallenge(challengeId, 'waiting before autoclick', { delayMs: config.autosolveDelayMs });
     await page.waitForTimeout(config.autosolveDelayMs);
-    await clickCheckbox(page);
+    const autoclickStrategy = await clickCheckbox(state);
+    logChallenge(challengeId, 'waiting for success token after autoclick', {
+      strategy: autoclickStrategy,
+      timeoutMs: config.autosolveTimeoutMs
+    });
     const token = await waitForToken(state, config.autosolveTimeoutMs);
+    logChallenge(challengeId, 'autosolve succeeded');
     await finishChallenge(state, { status: 'ok', token });
   } catch (autosolveError) {
+    logChallenge(challengeId, 'autosolve did not complete', { error: autosolveError.message });
     if (state.token) {
+      logChallenge(challengeId, 'token was captured during autosolve error handling');
       await finishChallenge(state, { status: 'ok', token: state.token });
       return;
     }
@@ -194,12 +298,20 @@ async function solveChallenge({ challengeId, captchaUrl, callbackUrl }) {
     state.status = 'operator_required';
     state.operatorUrl = publicChallengeUrl(challengeId);
     state.autosolveError = autosolveError.message;
+    logChallenge(challengeId, 'operator interaction required', {
+      operatorUrl: operatorFollowUrl(challengeId),
+      reason: autosolveError.message,
+      timeoutMs: config.operatorTimeoutMs
+    });
     startOperatorScreenshots(state);
 
     try {
+      logChallenge(challengeId, 'waiting for success token from operator');
       const token = await waitForToken(state, config.operatorTimeoutMs);
+      logChallenge(challengeId, 'operator solve succeeded');
       await finishChallenge(state, { status: 'ok', token });
     } catch (operatorError) {
+      logChallenge(challengeId, 'operator solve failed', { error: operatorError.message });
       await finishChallenge(state, { status: 'failed', error: operatorError.message });
     }
   } finally {
@@ -223,6 +335,7 @@ app.post('/solve', (req, res) => {
   }
 
   solveChallenge({ challengeId, captchaUrl, callbackUrl }).catch(async (error) => {
+    logChallenge(challengeId, 'challenge failed outside solve flow', { error: error.message });
     const state = challenges.get(challengeId);
     if (state) {
       await finishChallenge(state, { status: 'failed', error: error.message }).catch(() => undefined);
@@ -241,6 +354,8 @@ app.get('/operator/:challengeId', (req, res) => {
     res.status(404).send('challenge not found');
     return;
   }
+
+  logChallenge(state.challengeId, 'operator view opened');
 
   res.type('html').send(`<!doctype html>
 <html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Captcha ${state.challengeId}</title>
@@ -275,6 +390,13 @@ app.post('/operator/:challengeId/tap', async (req, res) => {
   const viewport = state.page.viewportSize() || { width: config.viewportWidth, height: config.viewportHeight };
   const x = Math.max(0, Math.min(1, Number(req.body.x))) * viewport.width;
   const y = Math.max(0, Math.min(1, Number(req.body.y))) * viewport.height;
+  logChallenge(state.challengeId, 'operator tap received', {
+    normalizedX: req.body.x,
+    normalizedY: req.body.y,
+    x,
+    y,
+    viewport
+  });
   await state.page.mouse.click(x, y, { delay: 80 });
   res.json({ ok: true });
 });

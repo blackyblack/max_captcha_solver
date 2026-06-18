@@ -49,6 +49,32 @@ npm install
 npm start
 ```
 
+## Manual live check
+
+Use `.tmp/live-check.js` to test a freshly generated captcha URL end to end. The script starts the solver on `127.0.0.1:3217`, starts a local callback receiver on `127.0.0.1:3218`, submits `POST /solve`, and prints whether the callback contains a token.
+
+The captcha URL must be fresh and unused. Expired or already-used `session_token` values may still return HTTP 200 but render a blank page or never produce `success_token`.
+
+PowerShell:
+
+```powershell
+$env:CAPTCHA_URL='https://id.vk.ru/not_robot_captcha?...'
+node .tmp\live-check.js
+```
+
+Expected success shape:
+
+```text
+accepted_status=202
+accepted_body={"challengeId":"live-...","status":"accepted","operatorUrl":"http://127.0.0.1:3217/operator/live-..."}
+callback_payload={"challengeId":"live-...","status":"ok","token":"..."}
+token_available=true
+```
+
+If `token_available=false`, check `callback_payload.error`. A timeout usually means the page did not expose the captcha, the token expired, or manual operator solving was not completed before `OPERATOR_TIMEOUT_MS`.
+
+The harness forces `BROWSER_CHANNEL=chrome`, so install Google Chrome or change `.tmp/live-check.js` to another Playwright channel such as `msedge`.
+
 ## Docker
 
 ```sh
