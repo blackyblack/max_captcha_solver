@@ -3,7 +3,7 @@ node_modules/
 # Local runtime configuration
 .env
 .env.*
-!.env.example
+!.env.template
 
 # Logs and temporary run artifacts
 *.log
