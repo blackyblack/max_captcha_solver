@@ -1,0 +1,18 @@
+node_modules/
+
+# Local runtime configuration
+.env
+.env.*
+!.env.template
+
+# Logs and temporary run artifacts
+*.log
+.tmp/
+tmp/
+artifacts/
+screenshots/
+
+# Test and browser tooling output
+coverage/
+test-results/
+playwright-report/
