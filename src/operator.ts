@@ -1,18 +1,33 @@
-'use strict';
+import express from 'express';
 
-const express = require('express');
-const { notifyManualSolveRequired } = require('./notifications');
-const { renderOperatorView } = require('./operatorView');
+import { notifyManualSolveRequired } from './notifications';
+import { renderOperatorView } from './operatorView';
+import type { ChallengeLog, ChallengeState, RelativeTap, SolverConfig, WaitForToken } from './types';
+import { errorMessage } from './types';
 
-function buildOperatorUrl(config, challengeId) {
+interface OperatorServiceOptions {
+  config: SolverConfig;
+  challenges: Map<string, ChallengeState>;
+  log: ChallengeLog;
+  waitForToken: WaitForToken;
+  updateScreenshot: (state: ChallengeState) => Promise<void>;
+  clickAtRelativePosition: (state: ChallengeState, tap: RelativeTap) => Promise<void>;
+}
+
+function asBodyRecord(body: unknown): Record<string, unknown> {
+  return body != null && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+}
+
+function buildOperatorUrl(config: SolverConfig, challengeId: string): string {
   const path = `/operator/${encodeURIComponent(challengeId)}`;
   const baseUrl = config.operatorViewBaseUrl || `http://127.0.0.1:${config.operatorPort}`;
   return `${baseUrl.replace(/\/$/, '')}${path}`;
 }
 
-function parseTap(body) {
-  const x = body?.x;
-  const y = body?.y;
+function parseTap(body: unknown): RelativeTap {
+  const record = asBodyRecord(body);
+  const x = record.x;
+  const y = record.y;
   if (x == null || y == null || (typeof x === 'string' && !x.trim()) || (typeof y === 'string' && !y.trim())) {
     throw new Error('x and y must be finite numbers between 0 and 1');
   }
@@ -33,38 +48,46 @@ function parseTap(body) {
   return { relativeX, relativeY };
 }
 
-function createOperatorService({ config, challenges, log, waitForToken, updateScreenshot, clickAtRelativePosition }) {
+export function createOperatorService({
+  config,
+  challenges,
+  log,
+  waitForToken,
+  updateScreenshot,
+  clickAtRelativePosition
+}: OperatorServiceOptions) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
-  function getOperatorUrl(challengeId) {
+  function getOperatorUrl(challengeId: string): string {
     return buildOperatorUrl(config, challengeId);
   }
 
-  function startScreenshots(state) {
-    updateScreenshot(state);
+  function startScreenshots(state: ChallengeState): void {
+    void updateScreenshot(state);
     state.screenshotTimer = setInterval(() => updateScreenshot(state), config.screenshotIntervalMs);
   }
 
-  async function waitForOperator(state, autosolveError) {
+  async function waitForOperator(state: ChallengeState, autosolveError: unknown): Promise<string> {
     if (state.token) {
       log(state.challengeId, 'token was captured during autosolve error handling');
       return state.token;
     }
 
+    const reason = errorMessage(autosolveError);
     state.status = 'operator_required';
     state.operatorUrl = getOperatorUrl(state.challengeId);
-    state.autosolveError = autosolveError.message;
+    state.autosolveError = reason;
     log(state.challengeId, 'operator interaction required', {
       operatorUrl: state.operatorUrl,
-      reason: autosolveError.message
+      reason
     });
 
     startScreenshots(state);
     await notifyManualSolveRequired({
       challengeId: state.challengeId,
       operatorUrl: state.operatorUrl,
-      reason: autosolveError.message,
+      reason,
       config,
       log
     });
@@ -116,11 +139,11 @@ function createOperatorService({ config, challenges, log, waitForToken, updateSc
       return;
     }
 
-    let tap;
+    let tap: RelativeTap;
     try {
       tap = parseTap(req.body);
     } catch (error) {
-      res.status(400).json({ error: error.message });
+      res.status(400).json({ error: errorMessage(error) });
       return;
     }
 
@@ -134,7 +157,3 @@ function createOperatorService({ config, challenges, log, waitForToken, updateSc
     waitForOperator
   };
 }
-
-module.exports = {
-  createOperatorService
-};

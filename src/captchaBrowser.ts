@@ -1,11 +1,25 @@
-'use strict';
+import { chromium, type Browser, type Locator, type Page, type Response } from 'playwright';
 
-const { chromium } = require('playwright');
+import type { ChallengeLog, ChallengeState, RelativeTap, SolverConfig, WaitForToken } from './types';
+import { errorMessage } from './types';
 
-function createCaptchaBrowser({ config, log, waitForToken }) {
-  let browserPromise;
+interface CaptchaBrowserOptions {
+  config: SolverConfig;
+  log: ChallengeLog;
+  waitForToken: WaitForToken;
+}
 
-  function getBrowser() {
+interface CaptchaResponsePayload {
+  success_token?: unknown;
+  successToken?: unknown;
+  response?: CaptchaResponsePayload;
+  result?: CaptchaResponsePayload;
+}
+
+export function createCaptchaBrowser({ config, log, waitForToken }: CaptchaBrowserOptions) {
+  let browserPromise: Promise<Browser> | undefined;
+
+  function getBrowser(): Promise<Browser> {
     if (!browserPromise) {
       browserPromise = chromium
         .launch({
@@ -27,20 +41,22 @@ function createCaptchaBrowser({ config, log, waitForToken }) {
     return browserPromise;
   }
 
-  function extractSuccessToken(payload) {
+  function extractSuccessToken(payload: unknown): string | undefined {
     if (!payload || typeof payload !== 'object') return undefined;
+    const typedPayload = payload as CaptchaResponsePayload;
 
-    return (
-      payload.success_token ||
-      payload.successToken ||
-      payload.response?.success_token ||
-      payload.response?.successToken ||
-      payload.result?.success_token ||
-      payload.result?.successToken
-    );
+    const token =
+      typedPayload.success_token ||
+      typedPayload.successToken ||
+      typedPayload.response?.success_token ||
+      typedPayload.response?.successToken ||
+      typedPayload.result?.success_token ||
+      typedPayload.result?.successToken;
+
+    return typeof token === 'string' && token ? token : undefined;
   }
 
-  function captureTokenFromResponse(state, response) {
+  function captureTokenFromResponse(state: ChallengeState, response: Response): void {
     if (!response.url().includes('/method/captchaNotRobot.check')) return;
 
     log(state.challengeId, 'captcha check response received', { status: response.status() });
@@ -56,11 +72,11 @@ function createCaptchaBrowser({ config, log, waitForToken }) {
         for (const waiter of state.tokenWaiters) waiter(token);
       })
       .catch((error) => {
-        log(state.challengeId, 'captcha check response parse failed', { error: error.message });
+        log(state.challengeId, 'captcha check response parse failed', { error: errorMessage(error) });
       });
   }
 
-  async function openChallengePage(state) {
+  async function openChallengePage(state: ChallengeState): Promise<void> {
     const browser = await getBrowser();
     const context = await browser.newContext({
       userAgent: config.userAgent,
@@ -77,7 +93,7 @@ function createCaptchaBrowser({ config, log, waitForToken }) {
     page.on('response', (response) => captureTokenFromResponse(state, response));
   }
 
-  async function clickElementCenter(page, locator) {
+  async function clickElementCenter(page: Page, locator: Locator): Promise<void> {
     const box = await locator.boundingBox().catch(() => undefined);
     if (!box) {
       await locator.click({ delay: 120, timeout: 3000, force: true });
@@ -89,8 +105,9 @@ function createCaptchaBrowser({ config, log, waitForToken }) {
     await page.mouse.click(x, y, { delay: 120 });
   }
 
-  async function clickCheckbox(state) {
+  async function clickCheckbox(state: ChallengeState): Promise<string> {
     const { page, challengeId } = state;
+    if (!page) throw new Error('challenge page is not open');
     const checkbox = page.locator('#not-robot-captcha-checkbox').first();
 
     if (await checkbox.isVisible({ timeout: 3000 }).catch(() => false)) {
@@ -116,7 +133,9 @@ function createCaptchaBrowser({ config, log, waitForToken }) {
     return 'fallback-coordinate';
   }
 
-  async function tryAutosolve(state) {
+  async function tryAutosolve(state: ChallengeState): Promise<string> {
+    if (!state.page) throw new Error('challenge page is not open');
+
     log(state.challengeId, 'navigating to captcha');
     const navigationResponse = await state.page.goto(state.captchaUrl, {
       waitUntil: 'domcontentloaded',
@@ -133,18 +152,20 @@ function createCaptchaBrowser({ config, log, waitForToken }) {
     return waitForToken(state, config.autosolveTimeoutMs);
   }
 
-  async function updateScreenshot(state) {
+  async function updateScreenshot(state: ChallengeState): Promise<void> {
     if (!state.page || state.done) return;
 
     try {
       state.screenshot = await state.page.screenshot({ type: 'jpeg', quality: 70 });
       state.lastScreenshotAt = new Date();
     } catch (error) {
-      state.lastScreenshotError = error.message;
+      state.lastScreenshotError = errorMessage(error);
     }
   }
 
-  async function clickAtRelativePosition(state, { relativeX, relativeY }) {
+  async function clickAtRelativePosition(state: ChallengeState, { relativeX, relativeY }: RelativeTap): Promise<void> {
+    if (!state.page) throw new Error('challenge page is not open');
+
     const viewport = state.page.viewportSize() || { width: config.viewportWidth, height: config.viewportHeight };
     const x = relativeX * viewport.width;
     const y = relativeY * viewport.height;
@@ -160,7 +181,7 @@ function createCaptchaBrowser({ config, log, waitForToken }) {
     await state.page.mouse.click(x, y, { delay: 80 });
   }
 
-  async function closeBrowser() {
+  async function closeBrowser(): Promise<void> {
     const browser = await browserPromise?.catch(() => undefined);
     await browser?.close().catch(() => undefined);
   }
@@ -173,7 +194,3 @@ function createCaptchaBrowser({ config, log, waitForToken }) {
     updateScreenshot
   };
 }
-
-module.exports = {
-  createCaptchaBrowser
-};

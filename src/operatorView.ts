@@ -1,6 +1,10 @@
-'use strict';
+interface OperatorViewModel {
+  challengeId: string;
+  status: string;
+  screenshotIntervalMs: number;
+}
 
-function jsonForInlineScript(value) {
+function jsonForInlineScript(value: string): string {
   return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (char) => {
     switch (char) {
       case '<':
@@ -19,7 +23,7 @@ function jsonForInlineScript(value) {
   });
 }
 
-function renderOperatorView({ challengeId, status, screenshotIntervalMs }) {
+export function renderOperatorView({ challengeId, status, screenshotIntervalMs }: OperatorViewModel): string {
   const screenshotPath = `/operator/${encodeURIComponent(challengeId)}/screenshot`;
 
   return `<!doctype html>
@@ -66,7 +70,3 @@ function renderOperatorView({ challengeId, status, screenshotIntervalMs }) {
 </body>
 </html>`;
 }
-
-module.exports = {
-  renderOperatorView
-};

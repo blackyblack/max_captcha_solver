@@ -1,25 +1,26 @@
-'use strict';
+import dotenv from 'dotenv';
+import express from 'express';
 
-require('dotenv').config({ quiet: true });
+import { createCaptchaBrowser } from './captchaBrowser';
+import { formatAllowedHosts, loadConfig, normalizeHost } from './config';
+import { createOperatorService } from './operator';
+import type { ChallengeState, FinishPayload, LogDetails } from './types';
+import { errorMessage } from './types';
 
-const express = require('express');
-const { createCaptchaBrowser } = require('./captchaBrowser');
-const { loadConfig, formatAllowedHosts, normalizeHost } = require('./config');
-const { createOperatorService } = require('./operator');
-
+dotenv.config({ quiet: true });
 const config = loadConfig();
 process.env.DISPLAY = config.display;
 
-const challenges = new Map();
+const challenges = new Map<string, ChallengeState>();
 const solveApp = express();
 solveApp.use(express.json({ limit: '1mb' }));
 
-function logChallenge(challengeId, message, details = {}) {
+function logChallenge(challengeId: string, message: string, details: LogDetails = {}): void {
   const suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : '';
   console.log(`[challenge:${challengeId}] ${message}${suffix}`);
 }
 
-function normalizeChallengeId(value) {
+function normalizeChallengeId(value: unknown): string | undefined {
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : undefined;
   if (typeof value !== 'string') return undefined;
 
@@ -27,12 +28,16 @@ function normalizeChallengeId(value) {
   return trimmed || undefined;
 }
 
-function validateSubmittedUrl(value, fieldName, allowedHosts) {
+function asBodyRecord(body: unknown): Record<string, unknown> {
+  return body != null && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+}
+
+function validateSubmittedUrl(value: unknown, fieldName: string, allowedHosts: Set<string>): string {
   if (typeof value !== 'string') {
     throw new Error(`${fieldName} must be a string`);
   }
 
-  let parsed;
+  let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
@@ -56,23 +61,24 @@ function validateSubmittedUrl(value, fieldName, allowedHosts) {
   return parsed.toString();
 }
 
-function buildChallenge(body) {
-  const challengeId = normalizeChallengeId(body.challengeId);
-  if (!challengeId || body.captchaUrl == null || body.callbackUrl == null) {
+function buildChallenge(body: unknown): ChallengeState {
+  const record = asBodyRecord(body);
+  const challengeId = normalizeChallengeId(record.challengeId);
+  if (!challengeId || record.captchaUrl == null || record.callbackUrl == null) {
     throw new Error('challengeId, captchaUrl and callbackUrl are required');
   }
 
   return {
     challengeId,
-    captchaUrl: validateSubmittedUrl(body.captchaUrl, 'captchaUrl', config.captchaAllowedHosts),
-    callbackUrl: validateSubmittedUrl(body.callbackUrl, 'callbackUrl', config.callbackAllowedHosts),
+    captchaUrl: validateSubmittedUrl(record.captchaUrl, 'captchaUrl', config.captchaAllowedHosts),
+    callbackUrl: validateSubmittedUrl(record.callbackUrl, 'callbackUrl', config.callbackAllowedHosts),
     createdAt: new Date(),
     status: 'queued',
     tokenWaiters: new Set()
   };
 }
 
-function waitForToken(state, timeoutMs) {
+function waitForToken(state: ChallengeState, timeoutMs: number): Promise<string> {
   if (state.token) return Promise.resolve(state.token);
 
   return new Promise((resolve, reject) => {
@@ -86,7 +92,7 @@ function waitForToken(state, timeoutMs) {
       state.tokenWaiters.delete(onToken);
     };
 
-    const onToken = (token) => {
+    const onToken = (token: string) => {
       cleanup();
       resolve(token);
     };
@@ -110,7 +116,7 @@ const operatorService = createOperatorService({
   clickAtRelativePosition: captchaBrowser.clickAtRelativePosition
 });
 
-async function postCallback(callbackUrl, body) {
+async function postCallback(callbackUrl: string, body: Record<string, unknown>): Promise<void> {
   const response = await fetch(callbackUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -124,7 +130,7 @@ async function postCallback(callbackUrl, body) {
   }
 }
 
-async function finishChallenge(state, payload) {
+async function finishChallenge(state: ChallengeState, payload: FinishPayload): Promise<void> {
   if (state.done) return;
   state.done = true;
 
@@ -140,7 +146,7 @@ async function finishChallenge(state, payload) {
     await postCallback(state.callbackUrl, { challengeId: state.challengeId, ...payload });
     logChallenge(state.challengeId, 'callback posted', { status: payload.status });
   } catch (error) {
-    logChallenge(state.challengeId, 'callback delivery failed', { error: error.message });
+    logChallenge(state.challengeId, 'callback delivery failed', { error: errorMessage(error) });
   } finally {
     await state.page?.close().catch(() => undefined);
     await state.context?.close().catch(() => undefined);
@@ -148,7 +154,7 @@ async function finishChallenge(state, payload) {
   }
 }
 
-async function runChallenge(state) {
+async function runChallenge(state: ChallengeState): Promise<void> {
   logChallenge(state.challengeId, 'challenge accepted', {
     captchaUrl: state.captchaUrl,
     callbackUrl: state.callbackUrl
@@ -161,15 +167,15 @@ async function runChallenge(state) {
     logChallenge(state.challengeId, 'autosolve succeeded');
     await finishChallenge(state, { status: 'ok', token });
   } catch (autosolveError) {
-    logChallenge(state.challengeId, 'autosolve did not complete', { error: autosolveError.message });
+    logChallenge(state.challengeId, 'autosolve did not complete', { error: errorMessage(autosolveError) });
 
     try {
       const token = await operatorService.waitForOperator(state, autosolveError);
       logChallenge(state.challengeId, 'operator solve succeeded');
       await finishChallenge(state, { status: 'ok', token });
     } catch (operatorError) {
-      logChallenge(state.challengeId, 'operator solve failed', { error: operatorError.message });
-      await finishChallenge(state, { status: 'failed', error: operatorError.message });
+      logChallenge(state.challengeId, 'operator solve failed', { error: errorMessage(operatorError) });
+      await finishChallenge(state, { status: 'failed', error: errorMessage(operatorError) });
     }
   }
 }
@@ -179,11 +185,11 @@ solveApp.get('/healthz', (_req, res) => {
 });
 
 solveApp.post('/solve', (req, res) => {
-  let state;
+  let state: ChallengeState;
   try {
     state = buildChallenge(req.body || {});
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(400).json({ error: errorMessage(error) });
     return;
   }
 
@@ -194,8 +200,8 @@ solveApp.post('/solve', (req, res) => {
 
   challenges.set(state.challengeId, state);
   runChallenge(state).catch(async (error) => {
-    logChallenge(state.challengeId, 'challenge failed outside solve flow', { error: error.message });
-    await finishChallenge(state, { status: 'failed', error: error.message }).catch(() => undefined);
+    logChallenge(state.challengeId, 'challenge failed outside solve flow', { error: errorMessage(error) });
+    await finishChallenge(state, { status: 'failed', error: errorMessage(error) }).catch(() => undefined);
   });
 
   res.status(202).json({
