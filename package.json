@@ -5,6 +5,8 @@
   "description": "Standalone VK ID not_robot captcha solver service for MAX auth flows.",
   "main": "src/server.js",
   "scripts": {
+    "install:browser": "playwright install chromium",
+    "postinstall": "npm run install:browser",
     "start": "node src/server.js",
     "check": "node --check src/server.js && node --check src/captchaBrowser.js && node --check src/config.js && node --check src/notifications.js && node --check src/operator.js && node --check src/operatorView.js"
   },

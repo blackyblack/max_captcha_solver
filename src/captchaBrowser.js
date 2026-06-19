@@ -68,9 +68,10 @@ function createCaptchaBrowser({ config, log, waitForToken }) {
       locale: 'ru-RU',
       timezoneId: 'Europe/Moscow'
     });
+    state.context = context;
+
     const page = await context.newPage();
 
-    state.context = context;
     state.page = page;
     state.status = 'running';
     page.on('response', (response) => captureTokenFromResponse(state, response));

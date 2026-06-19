@@ -18,6 +18,9 @@ npm install
 cp .env.template .env
 ```
 
+`npm install` also downloads the Playwright Chromium runtime used by the service.
+If npm lifecycle scripts are disabled, run `npm run install:browser` before starting the service.
+
 ## Run
 
 ```sh
