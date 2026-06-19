@@ -1,115 +1,136 @@
 # MAX captcha solver
 
-Standalone service that solves VK ID `not_robot_captcha` challenges for MAX auth flows and returns the resulting session token through a callback.
+Standalone service that solves VK ID `not_robot_captcha` challenges for MAX auth flows. It accepts a captcha URL, tries to click the challenge in Chromium, falls back to a short-lived operator page when needed, and posts the resulting `success_token` to a callback URL.
 
-## Run
+See [API.md](./API.md) for endpoint details.
+
+## Prerequisites
+
+- Node.js 18 or newer.
+- A Chromium runtime supported by Playwright.
+- On headless Linux or Docker, an X server such as Xvfb because Chromium runs with `headless: false`.
+- Network access to the submitted captcha URL, callback URL, and Telegram API if notifications are enabled.
+
+## Installation
 
 ```sh
 npm install
 cp .env.template .env
+```
+
+## Run
+
+```sh
 npm start
 ```
 
-## API
-
-The service exposes two HTTP listeners:
-
-- Solve API: `SOLVE_HOST:SOLVE_PORT`, defaults to `127.0.0.1:3000`. This listener is intended for local callers only and is not authenticated.
-- Operator API: `OPERATOR_HOST:OPERATOR_PORT`, defaults to `0.0.0.0:3001`. Operator routes require an active `challengeId` in the URL and are short lived.
-
-### `POST /solve`
-
-Starts a challenge on the solve API. `captchaUrl` must be fresh and unused.
-
-```json
-{
-  "challengeId": "id-1",
-  "captchaUrl": "https://id.vk.ru/not_robot_captcha?...",
-  "callbackUrl": "https://max-login.example/captcha-callback"
-}
-```
-
-Returns `202 Accepted` immediately:
-
-```json
-{
-  "challengeId": "id-1",
-  "status": "accepted",
-  "operatorUrl": "https://solver.example/operator/id-1"
-}
-```
-
-When solved, the service posts to `callbackUrl`:
-
-```json
-{
-  "challengeId": "id-1",
-  "status": "ok",
-  "token": "success_token"
-}
-```
-
-On failure:
-
-```json
-{
-  "challengeId": "id-1",
-  "status": "failed",
-  "error": "reason"
-}
-```
-
-### `GET /healthz`
-
-Both listeners expose this endpoint and return service health with the active challenge count:
-
-```json
-{
-  "ok": true,
-  "challenges": 0
-}
-```
-
-## Operator Handoff
-
-The service first tries to solve automatically. If autosolve times out, it exposes `/operator/:challengeId` for manual solving and sends an operator notification.
-
-Telegram notifications are sent when `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are configured.
-
-## Telegram Setup
-
-1. Open Telegram and start a chat with `@BotFather`.
-2. Send `/newbot`, choose a name and username, and copy the bot token into `TELEGRAM_BOT_TOKEN`.
-3. Start a direct chat with the new bot, or add it to the operator group.
-4. Send any message to the bot or group.
-5. Open `https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates` in a browser.
-6. Copy the `chat.id` value into `TELEGRAM_CHAT_ID`. Group chat IDs are usually negative numbers.
-
-After changing `.env`, restart the service.
-
-## Configuration
-
-Copy `.env.template` to `.env` and adjust values there. The service loads `.env` with `dotenv` on startup.
-
-`OPERATOR_VIEW_BASE_URL` should point at the public operator listener, for example `https://solver.example`, when operators open links from outside the host.
-
-`CAPTCHA_ALLOWED_HOSTS` and `CALLBACK_ALLOWED_HOSTS` are comma-separated host allowlists for submitted `captchaUrl` and `callbackUrl` values. The defaults are `id.vk.ru` for captcha URLs and `127.0.0.1,localhost,::1,host.docker.internal` for callback URLs. Submitted URLs must use `http` or `https` and must not include credentials.
-
-`CALLBACK_TIMEOUT_MS` limits callback delivery time. Callback failures and timeouts are logged, but the browser page, context, and challenge entry are still cleaned up.
-
-## Docker
+Docker:
 
 ```sh
 docker build -t max-captcha-solver .
 docker run --rm -p 127.0.0.1:3000:3000 -p 3001:3001 max-captcha-solver
 ```
 
-This publishes the solve API only on host loopback, while the operator API is reachable on port `3001`.
+This publishes the solve API only on host loopback and exposes the operator API on port `3001`.
 
-When the callback receiver runs on the Docker host, submit `callbackUrl` as `http://host.docker.internal:<port>/...` instead of `http://127.0.0.1:<port>/...`; inside the container, `127.0.0.1` points back to the solver container itself. For another callback host, add that hostname to `CALLBACK_ALLOWED_HOSTS`.
+## Configuration
 
-If you only need the public operator API from Docker and another process inside the container/network calls `/solve`, publish just the operator port:
+The service loads `.env` with `dotenv`. Empty values use the defaults below.
 
-```sh
-docker run --rm -p 3001:3001 max-captcha-solver
-```
+`SOLVE_PORT`
+Default: `3000`.
+Solve API port. If empty, `PORT` is used before this default.
+
+`PORT`
+Default: empty.
+Compatibility fallback for `SOLVE_PORT`.
+
+`SOLVE_HOST`
+Default: `127.0.0.1`.
+Solve API bind host. Keep this private; the solve API is not authenticated.
+
+`OPERATOR_PORT`
+Default: `3001`.
+Operator API port.
+
+`OPERATOR_HOST`
+Default: `0.0.0.0`.
+Operator API bind host.
+
+`AUTOSOLVE_DELAY_MS`
+Default: `3000`.
+Delay after page load before the automatic click.
+
+`AUTOSOLVE_TIMEOUT_MS`
+Default: `15000`.
+Time to wait for `success_token` after automatic click.
+
+`OPERATOR_TIMEOUT_MS`
+Default: `180000`.
+Time to wait for manual operator solving.
+
+`OPERATOR_VIEW_BASE_URL`
+Default: empty.
+Public base URL used in operator notification links. Defaults to `http://127.0.0.1:OPERATOR_PORT`.
+
+`CAPTCHA_ALLOWED_HOSTS`
+Default: `id.vk.ru`.
+Comma-separated host allowlist for submitted captcha URLs.
+
+`CALLBACK_ALLOWED_HOSTS`
+Default: `127.0.0.1,localhost,::1,host.docker.internal`.
+Comma-separated host allowlist for submitted callback URLs.
+
+`CALLBACK_TIMEOUT_MS`
+Default: `10000`.
+Callback POST timeout. Callback failures are logged and cleanup still runs.
+
+`TELEGRAM_BOT_TOKEN`
+Default: empty.
+Enables Telegram operator notifications when set with `TELEGRAM_CHAT_ID`.
+
+`TELEGRAM_CHAT_ID`
+Default: empty.
+Telegram target chat ID.
+
+`TELEGRAM_NOTIFY_TIMEOUT_MS`
+Default: `5000`.
+Telegram send timeout.
+
+`BROWSER_UA`
+Default: Chrome Linux UA.
+Browser user agent.
+
+`DISPLAY`
+Default: `:99`.
+Display used by Chromium and Xvfb.
+
+`BROWSER_CHANNEL`
+Default: empty.
+Optional Playwright browser channel, for example `chrome`.
+
+`VIEWPORT_WIDTH`
+Default: `1280`.
+Browser viewport width.
+
+`VIEWPORT_HEIGHT`
+Default: `800`.
+Browser viewport height.
+
+`OPERATOR_SCREENSHOT_INTERVAL_MS`
+Default: `1000`.
+Operator page screenshot refresh interval.
+
+Submitted `captchaUrl` and `callbackUrl` values must use `http` or `https`, must not contain credentials, and must pass their host allowlists.
+
+When the callback receiver runs on the Docker host, submit `callbackUrl` as `http://host.docker.internal:<port>/...`; inside the container, `127.0.0.1` points back to the solver container.
+
+## Telegram Hints
+
+1. Create a bot with `@BotFather` and put its token in `TELEGRAM_BOT_TOKEN`.
+2. Start a direct chat with the bot, or add it to an operator group.
+3. Send any message to the bot or group.
+4. Open `https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates`.
+5. Put the `chat.id` value in `TELEGRAM_CHAT_ID`.
+
+Restart the service after changing `.env`.

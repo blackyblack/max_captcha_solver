@@ -6,7 +6,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/notifications.js"
+    "check": "node --check src/server.js && node --check src/captchaBrowser.js && node --check src/config.js && node --check src/notifications.js && node --check src/operator.js && node --check src/operatorView.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
