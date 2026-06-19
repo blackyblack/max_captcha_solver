@@ -26,6 +26,11 @@ function formatAllowedHosts(allowedHosts) {
   return Array.from(allowedHosts).join(', ');
 }
 
+function parseNumericEnv(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 const config = {
   solvePort: Number(process.env.SOLVE_PORT || process.env.PORT || 3000),
   solveHost: process.env.SOLVE_HOST || '127.0.0.1',
@@ -35,7 +40,7 @@ const config = {
   autosolveTimeoutMs: Number(process.env.AUTOSOLVE_TIMEOUT_MS || 15000),
   operatorTimeoutMs: Number(process.env.OPERATOR_TIMEOUT_MS || 180000),
   operatorViewBaseUrl: process.env.OPERATOR_VIEW_BASE_URL || '',
-  callbackTimeoutMs: Number(process.env.CALLBACK_TIMEOUT_MS || 10000),
+  callbackTimeoutMs: parseNumericEnv(process.env.CALLBACK_TIMEOUT_MS, 10000),
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
   telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
   telegramNotifyTimeoutMs: Number(process.env.TELEGRAM_NOTIFY_TIMEOUT_MS || 5000),
@@ -46,7 +51,7 @@ const config = {
   browserChannel: process.env.BROWSER_CHANNEL || '',
   viewportWidth: Number(process.env.VIEWPORT_WIDTH || 1280),
   viewportHeight: Number(process.env.VIEWPORT_HEIGHT || 800),
-  screenshotIntervalMs: Number(process.env.OPERATOR_SCREENSHOT_INTERVAL_MS || 1000),
+  screenshotIntervalMs: parseNumericEnv(process.env.OPERATOR_SCREENSHOT_INTERVAL_MS, 1000),
   captchaAllowedHosts: parseAllowedHosts(process.env.CAPTCHA_ALLOWED_HOSTS, 'id.vk.ru'),
   callbackAllowedHosts: parseAllowedHosts(process.env.CALLBACK_ALLOWED_HOSTS, '127.0.0.1,localhost,::1,host.docker.internal')
 };
@@ -92,7 +97,8 @@ function normalizeChallengeId(value) {
     return Number.isFinite(value) ? String(value) : undefined;
   }
   if (typeof value !== 'string') return undefined;
-  return value.trim() ? value : undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
 }
 
 function validateSubmittedUrl(value, fieldName, allowedHosts) {
@@ -464,7 +470,7 @@ operatorApp.post('/operator/:challengeId/tap', async (req, res) => {
     res.status(404).json({ error: 'challenge not found' });
     return;
   }
-  if (!state.page) {
+  if (state.status !== 'operator_required' || !state.page) {
     res.status(409).json({ error: 'challenge is not ready for operator input' });
     return;
   }
