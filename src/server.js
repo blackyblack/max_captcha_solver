@@ -84,7 +84,7 @@ function getBrowser() {
 }
 
 function normalizeChallengeId(value) {
-  if (!['string', 'number', 'boolean'].includes(typeof value)) return undefined;
+  if (!['string', 'number'].includes(typeof value)) return undefined;
   const challengeId = String(value);
   return challengeId.trim() ? challengeId : undefined;
 }
@@ -459,25 +459,25 @@ operatorApp.post('/operator/:challengeId/tap', async (req, res) => {
     res.status(409).json({ error: 'challenge is not ready for operator input' });
     return;
   }
-  const normalizedX = Number(req.body?.x);
-  const normalizedY = Number(req.body?.y);
+  const relativeX = Number(req.body?.x);
+  const relativeY = Number(req.body?.y);
   if (
-    !Number.isFinite(normalizedX) ||
-    !Number.isFinite(normalizedY) ||
-    normalizedX < 0 ||
-    normalizedX > 1 ||
-    normalizedY < 0 ||
-    normalizedY > 1
+    !Number.isFinite(relativeX) ||
+    !Number.isFinite(relativeY) ||
+    relativeX < 0 ||
+    relativeX > 1 ||
+    relativeY < 0 ||
+    relativeY > 1
   ) {
     res.status(400).json({ error: 'x and y must be finite numbers between 0 and 1' });
     return;
   }
   const viewport = state.page.viewportSize() || { width: config.viewportWidth, height: config.viewportHeight };
-  const x = normalizedX * viewport.width;
-  const y = normalizedY * viewport.height;
+  const x = relativeX * viewport.width;
+  const y = relativeY * viewport.height;
   logChallenge(state.challengeId, 'operator tap received', {
-    normalizedX,
-    normalizedY,
+    relativeX,
+    relativeY,
     x,
     y,
     viewport
