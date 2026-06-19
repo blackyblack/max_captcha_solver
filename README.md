@@ -16,6 +16,7 @@ See [API.md](./API.md) for endpoint details.
 ```sh
 npm install
 cp .env.template .env
+npm run build
 ```
 
 `npm install` also downloads the Playwright Chromium runtime used by the service.
@@ -26,6 +27,8 @@ If npm lifecycle scripts are disabled, run `npm run install:browser` before star
 ```sh
 npm start
 ```
+
+`npm start` runs the compiled service from `dist/`. Re-run `npm run build` after changing files under `src/`.
 
 Docker:
 

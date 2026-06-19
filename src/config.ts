@@ -1,9 +1,9 @@
-'use strict';
+import type { SolverConfig } from './types';
 
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
 
-const DEFAULTS = {
+export const DEFAULTS = {
   solvePort: 3000,
   solveHost: '127.0.0.1',
   operatorPort: 3001,
@@ -26,12 +26,14 @@ const DEFAULTS = {
   callbackAllowedHosts: '127.0.0.1,localhost,::1,host.docker.internal'
 };
 
-function envString(env, name, fallback) {
+type Env = NodeJS.ProcessEnv | Record<string, string | undefined>;
+
+function envString(env: Env, name: string, fallback: string): string {
   const value = env[name];
   return value == null || value === '' ? fallback : value;
 }
 
-function envNumber(env, name, fallback) {
+function envNumber(env: Env, name: string, fallback: number): number {
   const value = env[name];
   if (value == null || String(value).trim() === '') return fallback;
 
@@ -39,14 +41,14 @@ function envNumber(env, name, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function normalizeHost(host) {
+export function normalizeHost(host: unknown): string {
   return String(host || '')
     .trim()
     .toLowerCase()
     .replace(/^\[|\]$/g, '');
 }
 
-function parseAllowedHosts(value, fallback) {
+function parseAllowedHosts(value: string | undefined, fallback: string): Set<string> {
   return new Set(
     String(value || fallback)
       .split(',')
@@ -55,11 +57,11 @@ function parseAllowedHosts(value, fallback) {
   );
 }
 
-function formatAllowedHosts(allowedHosts) {
+export function formatAllowedHosts(allowedHosts: Set<string>): string {
   return Array.from(allowedHosts).join(', ');
 }
 
-function loadConfig(env = process.env) {
+export function loadConfig(env: Env = process.env): SolverConfig {
   const solvePortFallback = envNumber(env, 'PORT', DEFAULTS.solvePort);
 
   return {
@@ -89,10 +91,3 @@ function loadConfig(env = process.env) {
     callbackAllowedHosts: parseAllowedHosts(env.CALLBACK_ALLOWED_HOSTS, DEFAULTS.callbackAllowedHosts)
   };
 }
-
-module.exports = {
-  DEFAULTS,
-  formatAllowedHosts,
-  loadConfig,
-  normalizeHost
-};

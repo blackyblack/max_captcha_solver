@@ -1,6 +1,19 @@
-'use strict';
+import type { ChallengeLog, SolverConfig } from './types';
+import { errorMessage } from './types';
 
-function formatManualSolveMessage({ challengeId, operatorUrl, reason }) {
+interface ManualSolveNotification {
+  challengeId: string;
+  operatorUrl: string;
+  reason: string;
+  config: SolverConfig;
+  log: ChallengeLog;
+}
+
+function formatManualSolveMessage({
+  challengeId,
+  operatorUrl,
+  reason
+}: Pick<ManualSolveNotification, 'challengeId' | 'operatorUrl' | 'reason'>): string {
   return [
     'Manual captcha solving required',
     `Challenge: ${challengeId}`,
@@ -9,11 +22,11 @@ function formatManualSolveMessage({ challengeId, operatorUrl, reason }) {
   ].join('\n');
 }
 
-async function notifyTelegram({ challengeId, operatorUrl, reason, config, log }) {
+async function notifyTelegram({ challengeId, operatorUrl, reason, config, log }: ManualSolveNotification): Promise<void> {
   const { telegramBotToken, telegramChatId, telegramNotifyTimeoutMs } = config;
   if (!telegramBotToken || !telegramChatId) {
     log(challengeId, 'telegram notification skipped', {
-      reason: 'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are not both configured'
+      reason: 'TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured'
     });
     return;
   }
@@ -37,16 +50,18 @@ async function notifyTelegram({ challengeId, operatorUrl, reason, config, log })
   log(challengeId, 'telegram notification sent', { channel: 'telegram' });
 }
 
-async function notifyManualSolveRequired({ challengeId, operatorUrl, reason, config, log }) {
+export async function notifyManualSolveRequired({
+  challengeId,
+  operatorUrl,
+  reason,
+  config,
+  log
+}: ManualSolveNotification): Promise<void> {
   log(challengeId, 'operator notification required', { operatorUrl, reason });
 
   try {
     await notifyTelegram({ challengeId, operatorUrl, reason, config, log });
   } catch (error) {
-    log(challengeId, 'telegram notification failed', { error: error.message });
+    log(challengeId, 'telegram notification failed', { error: errorMessage(error) });
   }
 }
-
-module.exports = {
-  notifyManualSolveRequired
-};
