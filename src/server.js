@@ -84,9 +84,11 @@ function getBrowser() {
 }
 
 function normalizeChallengeId(value) {
-  if (!['string', 'number'].includes(typeof value)) return undefined;
-  const challengeId = String(value);
-  return challengeId.trim() ? challengeId : undefined;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(value) : undefined;
+  }
+  if (typeof value !== 'string') return undefined;
+  return value.trim() ? value : undefined;
 }
 
 function validateSubmittedUrl(value, fieldName, allowedHosts) {
@@ -459,8 +461,19 @@ operatorApp.post('/operator/:challengeId/tap', async (req, res) => {
     res.status(409).json({ error: 'challenge is not ready for operator input' });
     return;
   }
-  const relativeX = Number(req.body?.x);
-  const relativeY = Number(req.body?.y);
+  const rawX = req.body?.x;
+  const rawY = req.body?.y;
+  if (
+    rawX == null ||
+    rawY == null ||
+    (typeof rawX === 'string' && !rawX.trim()) ||
+    (typeof rawY === 'string' && !rawY.trim())
+  ) {
+    res.status(400).json({ error: 'x and y must be finite numbers between 0 and 1' });
+    return;
+  }
+  const relativeX = Number(rawX);
+  const relativeY = Number(rawY);
   if (
     !Number.isFinite(relativeX) ||
     !Number.isFinite(relativeY) ||
