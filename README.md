@@ -99,11 +99,13 @@ Copy `.env.template` to `.env` and adjust values there. The service loads `.env`
 
 ```sh
 docker build -t max-captcha-solver .
-docker run --rm -p 3001:3001 max-captcha-solver
+docker run --rm -p 127.0.0.1:3000:3000 -p 3001:3001 max-captcha-solver
 ```
 
-To access the solve API from the Docker host while keeping it host-local, publish it only on host loopback:
+This publishes the solve API only on host loopback, while the operator API is reachable on port `3001`.
+
+If you only need the public operator API from Docker and another process inside the container/network calls `/solve`, publish just the operator port:
 
 ```sh
-docker run --rm -p 127.0.0.1:3000:3000 -p 3001:3001 -e SOLVE_HOST=0.0.0.0 max-captcha-solver
+docker run --rm -p 3001:3001 max-captcha-solver
 ```
