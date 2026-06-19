@@ -22,6 +22,10 @@ function parseAllowedHosts(value, fallback) {
   );
 }
 
+function formatAllowedHosts(allowedHosts) {
+  return Array.from(allowedHosts).join(', ');
+}
+
 const config = {
   solvePort: Number(process.env.SOLVE_PORT || process.env.PORT || 3000),
   solveHost: process.env.SOLVE_HOST || '127.0.0.1',
@@ -44,7 +48,7 @@ const config = {
   viewportHeight: Number(process.env.VIEWPORT_HEIGHT || 800),
   screenshotIntervalMs: Number(process.env.OPERATOR_SCREENSHOT_INTERVAL_MS || 1000),
   captchaAllowedHosts: parseAllowedHosts(process.env.CAPTCHA_ALLOWED_HOSTS, 'id.vk.ru'),
-  callbackAllowedHosts: parseAllowedHosts(process.env.CALLBACK_ALLOWED_HOSTS, '127.0.0.1,localhost,::1')
+  callbackAllowedHosts: parseAllowedHosts(process.env.CALLBACK_ALLOWED_HOSTS, '127.0.0.1,localhost,::1,host.docker.internal')
 };
 
 process.env.DISPLAY = config.display;
@@ -109,8 +113,11 @@ function validateSubmittedUrl(value, fieldName, allowedHosts) {
   if (parsed.username || parsed.password) {
     throw new Error(`${fieldName} must not include credentials`);
   }
-  if (!allowedHosts.has(normalizeHost(parsed.hostname))) {
-    throw new Error(`${fieldName} host is not allowed`);
+  const submittedHost = normalizeHost(parsed.hostname);
+  if (!allowedHosts.has(submittedHost)) {
+    throw new Error(
+      `${fieldName} host "${submittedHost}" is not allowed; allowed hosts: ${formatAllowedHosts(allowedHosts)}`
+    );
   }
 
   return parsed.toString();

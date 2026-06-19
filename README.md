@@ -93,7 +93,7 @@ Copy `.env.template` to `.env` and adjust values there. The service loads `.env`
 
 `OPERATOR_VIEW_BASE_URL` should point at the public operator listener, for example `https://solver.example`, when operators open links from outside the host.
 
-`CAPTCHA_ALLOWED_HOSTS` and `CALLBACK_ALLOWED_HOSTS` are comma-separated host allowlists for submitted `captchaUrl` and `callbackUrl` values. The defaults are `id.vk.ru` for captcha URLs and `127.0.0.1,localhost,::1` for callback URLs. Submitted URLs must use `http` or `https` and must not include credentials.
+`CAPTCHA_ALLOWED_HOSTS` and `CALLBACK_ALLOWED_HOSTS` are comma-separated host allowlists for submitted `captchaUrl` and `callbackUrl` values. The defaults are `id.vk.ru` for captcha URLs and `127.0.0.1,localhost,::1,host.docker.internal` for callback URLs. Submitted URLs must use `http` or `https` and must not include credentials.
 
 `CALLBACK_TIMEOUT_MS` limits callback delivery time. Callback failures and timeouts are logged, but the browser page, context, and challenge entry are still cleaned up.
 
@@ -105,6 +105,8 @@ docker run --rm -p 127.0.0.1:3000:3000 -p 3001:3001 max-captcha-solver
 ```
 
 This publishes the solve API only on host loopback, while the operator API is reachable on port `3001`.
+
+When the callback receiver runs on the Docker host, submit `callbackUrl` as `http://host.docker.internal:<port>/...` instead of `http://127.0.0.1:<port>/...`; inside the container, `127.0.0.1` points back to the solver container itself. For another callback host, add that hostname to `CALLBACK_ALLOWED_HOSTS`.
 
 If you only need the public operator API from Docker and another process inside the container/network calls `/solve`, publish just the operator port:
 
