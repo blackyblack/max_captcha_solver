@@ -11,15 +11,9 @@ function formatManualSolveMessage({ challengeId, operatorUrl, reason }) {
 
 async function notifyTelegram({ challengeId, operatorUrl, reason, config, log }) {
   const { telegramBotToken, telegramChatId, telegramNotifyTimeoutMs } = config;
-  if (!telegramBotToken && !telegramChatId) {
-    log(challengeId, 'telegram notification skipped', {
-      reason: 'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are not configured'
-    });
-    return;
-  }
   if (!telegramBotToken || !telegramChatId) {
     log(challengeId, 'telegram notification skipped', {
-      reason: 'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be configured'
+      reason: 'TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are not both configured'
     });
     return;
   }

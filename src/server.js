@@ -3,100 +3,26 @@
 require('dotenv').config({ quiet: true });
 
 const express = require('express');
-const { chromium } = require('playwright');
-const { notifyManualSolveRequired } = require('./notifications');
+const { createCaptchaBrowser } = require('./captchaBrowser');
+const { loadConfig, formatAllowedHosts, normalizeHost } = require('./config');
+const { createOperatorService } = require('./operator');
 
-function normalizeHost(host) {
-  return String(host || '')
-    .trim()
-    .toLowerCase()
-    .replace(/^\[|\]$/g, '');
-}
-
-function parseAllowedHosts(value, fallback) {
-  return new Set(
-    String(value || fallback)
-      .split(',')
-      .map((host) => normalizeHost(host))
-      .filter(Boolean)
-  );
-}
-
-function formatAllowedHosts(allowedHosts) {
-  return Array.from(allowedHosts).join(', ');
-}
-
-function parseNumericEnv(value, fallback) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-const config = {
-  solvePort: Number(process.env.SOLVE_PORT || process.env.PORT || 3000),
-  solveHost: process.env.SOLVE_HOST || '127.0.0.1',
-  operatorPort: Number(process.env.OPERATOR_PORT || 3001),
-  operatorHost: process.env.OPERATOR_HOST || '0.0.0.0',
-  autosolveDelayMs: Number(process.env.AUTOSOLVE_DELAY_MS || 3000),
-  autosolveTimeoutMs: Number(process.env.AUTOSOLVE_TIMEOUT_MS || 15000),
-  operatorTimeoutMs: Number(process.env.OPERATOR_TIMEOUT_MS || 180000),
-  operatorViewBaseUrl: process.env.OPERATOR_VIEW_BASE_URL || '',
-  callbackTimeoutMs: parseNumericEnv(process.env.CALLBACK_TIMEOUT_MS, 10000),
-  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
-  telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
-  telegramNotifyTimeoutMs: Number(process.env.TELEGRAM_NOTIFY_TIMEOUT_MS || 5000),
-  userAgent:
-    process.env.BROWSER_UA ||
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-  display: process.env.DISPLAY || ':99',
-  browserChannel: process.env.BROWSER_CHANNEL || '',
-  viewportWidth: Number(process.env.VIEWPORT_WIDTH || 1280),
-  viewportHeight: Number(process.env.VIEWPORT_HEIGHT || 800),
-  screenshotIntervalMs: parseNumericEnv(process.env.OPERATOR_SCREENSHOT_INTERVAL_MS, 1000),
-  captchaAllowedHosts: parseAllowedHosts(process.env.CAPTCHA_ALLOWED_HOSTS, 'id.vk.ru'),
-  callbackAllowedHosts: parseAllowedHosts(process.env.CALLBACK_ALLOWED_HOSTS, '127.0.0.1,localhost,::1,host.docker.internal')
-};
-
+const config = loadConfig();
 process.env.DISPLAY = config.display;
 
-const solveApp = express();
-const operatorApp = express();
-solveApp.use(express.json({ limit: '1mb' }));
-operatorApp.use(express.json({ limit: '1mb' }));
-
 const challenges = new Map();
-let browserPromise;
+const solveApp = express();
+solveApp.use(express.json({ limit: '1mb' }));
 
 function logChallenge(challengeId, message, details = {}) {
   const suffix = Object.keys(details).length ? ` ${JSON.stringify(details)}` : '';
   console.log(`[challenge:${challengeId}] ${message}${suffix}`);
 }
 
-function getBrowser() {
-  if (!browserPromise) {
-    browserPromise = chromium
-      .launch({
-        headless: false,
-        ...(config.browserChannel ? { channel: config.browserChannel } : {}),
-        args: [
-          '--disable-blink-features=AutomationControlled',
-          '--no-sandbox',
-          '--disable-dev-shm-usage',
-          `--window-size=${config.viewportWidth},${config.viewportHeight}`
-        ]
-      })
-      .catch((error) => {
-        browserPromise = undefined;
-        throw error;
-      });
-  }
-  return browserPromise;
-}
-
 function normalizeChallengeId(value) {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? String(value) : undefined;
-  }
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : undefined;
   if (typeof value !== 'string') return undefined;
+
   const trimmed = value.trim();
   return trimmed || undefined;
 }
@@ -119,6 +45,7 @@ function validateSubmittedUrl(value, fieldName, allowedHosts) {
   if (parsed.username || parsed.password) {
     throw new Error(`${fieldName} must not include credentials`);
   }
+
   const submittedHost = normalizeHost(parsed.hostname);
   if (!allowedHosts.has(submittedHost)) {
     throw new Error(
@@ -129,55 +56,20 @@ function validateSubmittedUrl(value, fieldName, allowedHosts) {
   return parsed.toString();
 }
 
-function operatorUrl(challengeId) {
-  const path = `/operator/${encodeURIComponent(challengeId)}`;
-  const baseUrl = config.operatorViewBaseUrl || `http://127.0.0.1:${config.operatorPort}`;
-  return `${baseUrl.replace(/\/$/, '')}${path}`;
-}
-
-async function postCallback(callbackUrl, body) {
-  const response = await fetch(callbackUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    signal: AbortSignal.timeout(config.callbackTimeoutMs),
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`callback returned ${response.status}: ${text.slice(0, 500)}`);
+function buildChallenge(body) {
+  const challengeId = normalizeChallengeId(body.challengeId);
+  if (!challengeId || body.captchaUrl == null || body.callbackUrl == null) {
+    throw new Error('challengeId, captchaUrl and callbackUrl are required');
   }
-}
 
-function jsonForInlineScript(value) {
-  return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (char) => {
-    switch (char) {
-      case '<':
-        return '\\u003c';
-      case '>':
-        return '\\u003e';
-      case '&':
-        return '\\u0026';
-      case '\u2028':
-        return '\\u2028';
-      case '\u2029':
-        return '\\u2029';
-      default:
-        return char;
-    }
-  });
-}
-
-function extractSuccessToken(payload) {
-  if (!payload || typeof payload !== 'object') return undefined;
-  return (
-    payload.success_token ||
-    payload.successToken ||
-    payload.response?.success_token ||
-    payload.response?.successToken ||
-    payload.result?.success_token ||
-    payload.result?.successToken
-  );
+  return {
+    challengeId,
+    captchaUrl: validateSubmittedUrl(body.captchaUrl, 'captchaUrl', config.captchaAllowedHosts),
+    callbackUrl: validateSubmittedUrl(body.callbackUrl, 'callbackUrl', config.callbackAllowedHosts),
+    createdAt: new Date(),
+    status: 'queued',
+    tokenWaiters: new Set()
+  };
 }
 
 function waitForToken(state, timeoutMs) {
@@ -203,82 +95,39 @@ function waitForToken(state, timeoutMs) {
   });
 }
 
-function captureTokenFromResponse(state, response) {
-  const url = response.url();
-  if (!url.includes('/method/captchaNotRobot.check')) return;
+const captchaBrowser = createCaptchaBrowser({
+  config,
+  log: logChallenge,
+  waitForToken
+});
 
-  logChallenge(state.challengeId, 'captcha check response received', { status: response.status() });
+const operatorService = createOperatorService({
+  config,
+  challenges,
+  log: logChallenge,
+  waitForToken,
+  updateScreenshot: captchaBrowser.updateScreenshot,
+  clickAtRelativePosition: captchaBrowser.clickAtRelativePosition
+});
 
-  response
-    .json()
-    .then((payload) => {
-      const token = extractSuccessToken(payload);
-      if (!token || state.token) return;
-      state.token = token;
-      logChallenge(state.challengeId, 'success token captured');
-      for (const waiter of state.tokenWaiters) waiter(token);
-    })
-    .catch((error) => {
-      logChallenge(state.challengeId, 'captcha check response parse failed', { error: error.message });
-    });
-}
+async function postCallback(callbackUrl, body) {
+  const response = await fetch(callbackUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    signal: AbortSignal.timeout(config.callbackTimeoutMs),
+    body: JSON.stringify(body)
+  });
 
-async function clickCheckbox(state) {
-  const { page, challengeId } = state;
-  const checkbox = page.locator('#not-robot-captcha-checkbox').first();
-  if (await checkbox.isVisible({ timeout: 3000 }).catch(() => false)) {
-    const box = await checkbox.boundingBox().catch(() => undefined);
-    if (box) {
-      const x = Math.round(box.x + Math.min(22, box.width / 2));
-      const y = Math.round(box.y + box.height / 2);
-      await page.mouse.click(x, y, { delay: 120 });
-    } else {
-      await checkbox.click({ delay: 120, timeout: 3000, force: true });
-    }
-    logChallenge(challengeId, 'autoclick completed', { strategy: 'checkbox-selector' });
-    return 'checkbox-selector';
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`callback returned ${response.status}: ${text.slice(0, 500)}`);
   }
-
-  const label = page.getByText(/я не робот|i'?m not a robot|i am not a robot/i).first();
-  if (await label.isVisible({ timeout: 1000 }).catch(() => false)) {
-    const box = await label.boundingBox().catch(() => undefined);
-    if (box) {
-      const x = Math.round(box.x + Math.min(22, box.width / 2));
-      const y = Math.round(box.y + box.height / 2);
-      await page.mouse.click(x, y, { delay: 120 });
-    } else {
-      await label.click({ delay: 120, timeout: 3000, force: true });
-    }
-    logChallenge(challengeId, 'autoclick completed', { strategy: 'label-text' });
-    return 'label-text';
-  }
-
-  const viewport = page.viewportSize() || { width: config.viewportWidth, height: config.viewportHeight };
-  const x = Math.round(viewport.width / 2 - 55);
-  const y = Math.round(viewport.height / 2 + 80);
-  await page.mouse.click(x, y, { delay: 120 });
-  logChallenge(challengeId, 'autoclick completed', { strategy: 'fallback-coordinate' });
-  return 'fallback-coordinate';
-}
-
-async function updateScreenshot(state) {
-  if (!state.page || state.done) return;
-  try {
-    state.screenshot = await state.page.screenshot({ type: 'jpeg', quality: 70 });
-    state.lastScreenshotAt = new Date();
-  } catch (error) {
-    state.lastScreenshotError = error.message;
-  }
-}
-
-function startOperatorScreenshots(state) {
-  updateScreenshot(state);
-  state.screenshotTimer = setInterval(() => updateScreenshot(state), config.screenshotIntervalMs);
 }
 
 async function finishChallenge(state, payload) {
   if (state.done) return;
   state.done = true;
+
   if (state.screenshotTimer) clearInterval(state.screenshotTimer);
 
   logChallenge(state.challengeId, 'finishing challenge', {
@@ -299,75 +148,29 @@ async function finishChallenge(state, payload) {
   }
 }
 
-async function solveChallenge(state) {
-  const { challengeId, captchaUrl, callbackUrl } = state;
-  logChallenge(challengeId, 'challenge accepted', {
-    captchaUrl,
-    callbackUrl
+async function runChallenge(state) {
+  logChallenge(state.challengeId, 'challenge accepted', {
+    captchaUrl: state.captchaUrl,
+    callbackUrl: state.callbackUrl
   });
 
-  const browser = await getBrowser();
-  const context = await browser.newContext({
-    userAgent: config.userAgent,
-    viewport: { width: config.viewportWidth, height: config.viewportHeight },
-    locale: 'ru-RU',
-    timezoneId: 'Europe/Moscow'
-  });
-  state.context = context;
-  const page = await context.newPage();
-  state.page = page;
-  state.status = 'running';
-  page.on('response', (response) => captureTokenFromResponse(state, response));
+  await captchaBrowser.openChallengePage(state);
 
   try {
-    logChallenge(challengeId, 'navigating to captcha');
-    const navigationResponse = await page.goto(captchaUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    logChallenge(challengeId, 'captcha navigation completed', {
-      status: navigationResponse?.status()
-    });
-    await page.waitForTimeout(config.autosolveDelayMs);
-    const autoclickStrategy = await clickCheckbox(state);
-    logChallenge(challengeId, 'waiting for success token after autoclick', {
-      strategy: autoclickStrategy
-    });
-    const token = await waitForToken(state, config.autosolveTimeoutMs);
-    logChallenge(challengeId, 'autosolve succeeded');
+    const token = await captchaBrowser.tryAutosolve(state);
+    logChallenge(state.challengeId, 'autosolve succeeded');
     await finishChallenge(state, { status: 'ok', token });
   } catch (autosolveError) {
-    logChallenge(challengeId, 'autosolve did not complete', { error: autosolveError.message });
-    if (state.token) {
-      logChallenge(challengeId, 'token was captured during autosolve error handling');
-      await finishChallenge(state, { status: 'ok', token: state.token });
-      return;
-    }
-
-    state.status = 'operator_required';
-    state.operatorUrl = operatorUrl(challengeId);
-    state.autosolveError = autosolveError.message;
-    logChallenge(challengeId, 'operator interaction required', {
-      operatorUrl: state.operatorUrl,
-      reason: autosolveError.message
-    });
-    startOperatorScreenshots(state);
-    await notifyManualSolveRequired({
-      challengeId,
-      operatorUrl: state.operatorUrl,
-      reason: autosolveError.message,
-      config,
-      log: logChallenge
-    });
+    logChallenge(state.challengeId, 'autosolve did not complete', { error: autosolveError.message });
 
     try {
-      logChallenge(challengeId, 'waiting for success token from operator');
-      const token = await waitForToken(state, config.operatorTimeoutMs);
-      logChallenge(challengeId, 'operator solve succeeded');
+      const token = await operatorService.waitForOperator(state, autosolveError);
+      logChallenge(state.challengeId, 'operator solve succeeded');
       await finishChallenge(state, { status: 'ok', token });
     } catch (operatorError) {
-      logChallenge(challengeId, 'operator solve failed', { error: operatorError.message });
+      logChallenge(state.challengeId, 'operator solve failed', { error: operatorError.message });
       await finishChallenge(state, { status: 'failed', error: operatorError.message });
     }
-  } finally {
-    if (state.done) await context.close().catch(() => undefined);
   }
 }
 
@@ -376,145 +179,34 @@ solveApp.get('/healthz', (_req, res) => {
 });
 
 solveApp.post('/solve', (req, res) => {
-  const body = req.body || {};
-  const challengeId = normalizeChallengeId(body.challengeId);
-  if (!challengeId || body.captchaUrl == null || body.callbackUrl == null) {
-    res.status(400).json({ error: 'challengeId, captchaUrl and callbackUrl are required' });
-    return;
-  }
-
-  let captchaUrl;
-  let callbackUrl;
+  let state;
   try {
-    captchaUrl = validateSubmittedUrl(body.captchaUrl, 'captchaUrl', config.captchaAllowedHosts);
-    callbackUrl = validateSubmittedUrl(body.callbackUrl, 'callbackUrl', config.callbackAllowedHosts);
+    state = buildChallenge(req.body || {});
   } catch (error) {
     res.status(400).json({ error: error.message });
     return;
   }
 
-  if (challenges.has(challengeId)) {
+  if (challenges.has(state.challengeId)) {
     res.status(409).json({ error: 'challengeId is already running' });
     return;
   }
 
-  const state = {
-    challengeId,
-    captchaUrl,
-    callbackUrl,
-    createdAt: new Date(),
-    status: 'queued',
-    tokenWaiters: new Set()
-  };
-  challenges.set(challengeId, state);
-
-  solveChallenge(state).catch(async (error) => {
-    logChallenge(challengeId, 'challenge failed outside solve flow', { error: error.message });
+  challenges.set(state.challengeId, state);
+  runChallenge(state).catch(async (error) => {
+    logChallenge(state.challengeId, 'challenge failed outside solve flow', { error: error.message });
     await finishChallenge(state, { status: 'failed', error: error.message }).catch(() => undefined);
   });
 
-  res.status(202).json({ challengeId, status: 'accepted', operatorUrl: operatorUrl(challengeId) });
-});
-
-operatorApp.get('/healthz', (_req, res) => {
-  res.json({ ok: true, challenges: challenges.size });
-});
-
-operatorApp.get('/operator/:challengeId', (req, res) => {
-  const state = challenges.get(req.params.challengeId);
-  if (!state) {
-    res.status(404).send('challenge not found');
-    return;
-  }
-
-  logChallenge(state.challengeId, 'operator view opened');
-
-  const challengeId = jsonForInlineScript(state.challengeId);
-  const status = jsonForInlineScript(state.status);
-  const screenshotPath = jsonForInlineScript(`/operator/${encodeURIComponent(state.challengeId)}/screenshot`);
-
-  res.type('html').send(`<!doctype html>
-<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title></title>
-<style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}#bar{padding:8px}#screen{width:100%;touch-action:none;display:block}</style></head>
-<body><div id="bar"><span id="challenge"></span>: <span id="status"></span></div><img id="screen" alt="">
-<script>
-const id=${challengeId};
-const status=${status};
-const screenshotPath=${screenshotPath};
-document.title='Captcha '+id;
-document.getElementById('challenge').textContent=id;
-document.getElementById('status').textContent=status;
-const img=document.getElementById('screen');
-img.src=screenshotPath;
-setInterval(()=>{ img.src=screenshotPath+'?t='+Date.now(); }, ${Math.max(500, config.screenshotIntervalMs)});
-img.addEventListener('click', async (event)=>{
-  const rect=img.getBoundingClientRect();
-  await fetch('/operator/'+encodeURIComponent(id)+'/tap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({x:(event.clientX-rect.left)/rect.width,y:(event.clientY-rect.top)/rect.height})});
-});
-</script></body></html>`);
-});
-
-operatorApp.get('/operator/:challengeId/screenshot', async (req, res) => {
-  const state = challenges.get(req.params.challengeId);
-  if (!state) {
-    res.status(404).end();
-    return;
-  }
-  if (!state.screenshot) await updateScreenshot(state);
-  res.type('jpg').send(state.screenshot || Buffer.alloc(0));
-});
-
-operatorApp.post('/operator/:challengeId/tap', async (req, res) => {
-  const state = challenges.get(req.params.challengeId);
-  if (!state) {
-    res.status(404).json({ error: 'challenge not found' });
-    return;
-  }
-  if (state.status !== 'operator_required' || !state.page) {
-    res.status(409).json({ error: 'challenge is not ready for operator input' });
-    return;
-  }
-  const rawX = req.body?.x;
-  const rawY = req.body?.y;
-  if (
-    rawX == null ||
-    rawY == null ||
-    (typeof rawX === 'string' && !rawX.trim()) ||
-    (typeof rawY === 'string' && !rawY.trim())
-  ) {
-    res.status(400).json({ error: 'x and y must be finite numbers between 0 and 1' });
-    return;
-  }
-  const relativeX = Number(rawX);
-  const relativeY = Number(rawY);
-  if (
-    !Number.isFinite(relativeX) ||
-    !Number.isFinite(relativeY) ||
-    relativeX < 0 ||
-    relativeX > 1 ||
-    relativeY < 0 ||
-    relativeY > 1
-  ) {
-    res.status(400).json({ error: 'x and y must be finite numbers between 0 and 1' });
-    return;
-  }
-  const viewport = state.page.viewportSize() || { width: config.viewportWidth, height: config.viewportHeight };
-  const x = relativeX * viewport.width;
-  const y = relativeY * viewport.height;
-  logChallenge(state.challengeId, 'operator tap received', {
-    relativeX,
-    relativeY,
-    x,
-    y,
-    viewport
+  res.status(202).json({
+    challengeId: state.challengeId,
+    status: 'accepted',
+    operatorUrl: operatorService.getOperatorUrl(state.challengeId)
   });
-  await state.page.mouse.click(x, y, { delay: 80 });
-  res.json({ ok: true });
 });
 
 process.on('SIGTERM', async () => {
-  const browser = await browserPromise?.catch(() => undefined);
-  await browser?.close().catch(() => undefined);
+  await captchaBrowser.closeBrowser();
   process.exit(0);
 });
 
@@ -522,6 +214,6 @@ solveApp.listen(config.solvePort, config.solveHost, () => {
   console.log(`captcha solve API listening on ${config.solveHost}:${config.solvePort}`);
 });
 
-operatorApp.listen(config.operatorPort, config.operatorHost, () => {
+operatorService.app.listen(config.operatorPort, config.operatorHost, () => {
   console.log(`captcha operator API listening on ${config.operatorHost}:${config.operatorPort}`);
 });
