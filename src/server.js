@@ -6,6 +6,22 @@ const express = require('express');
 const { chromium } = require('playwright');
 const { notifyManualSolveRequired } = require('./notifications');
 
+function normalizeHost(host) {
+  return String(host || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+}
+
+function parseAllowedHosts(value, fallback) {
+  return new Set(
+    String(value || fallback)
+      .split(',')
+      .map((host) => normalizeHost(host))
+      .filter(Boolean)
+  );
+}
+
 const config = {
   solvePort: Number(process.env.SOLVE_PORT || process.env.PORT || 3000),
   solveHost: process.env.SOLVE_HOST || '127.0.0.1',
@@ -26,7 +42,9 @@ const config = {
   browserChannel: process.env.BROWSER_CHANNEL || '',
   viewportWidth: Number(process.env.VIEWPORT_WIDTH || 1280),
   viewportHeight: Number(process.env.VIEWPORT_HEIGHT || 800),
-  screenshotIntervalMs: Number(process.env.OPERATOR_SCREENSHOT_INTERVAL_MS || 1000)
+  screenshotIntervalMs: Number(process.env.OPERATOR_SCREENSHOT_INTERVAL_MS || 1000),
+  captchaAllowedHosts: parseAllowedHosts(process.env.CAPTCHA_ALLOWED_HOSTS, 'id.vk.ru'),
+  callbackAllowedHosts: parseAllowedHosts(process.env.CALLBACK_ALLOWED_HOSTS, '127.0.0.1,localhost,::1')
 };
 
 process.env.DISPLAY = config.display;
@@ -46,18 +64,54 @@ function logChallenge(challengeId, message, details = {}) {
 
 function getBrowser() {
   if (!browserPromise) {
-    browserPromise = chromium.launch({
-      headless: false,
-      ...(config.browserChannel ? { channel: config.browserChannel } : {}),
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--no-sandbox',
-        '--disable-dev-shm-usage',
-        `--window-size=${config.viewportWidth},${config.viewportHeight}`
-      ]
-    });
+    browserPromise = chromium
+      .launch({
+        headless: false,
+        ...(config.browserChannel ? { channel: config.browserChannel } : {}),
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--no-sandbox',
+          '--disable-dev-shm-usage',
+          `--window-size=${config.viewportWidth},${config.viewportHeight}`
+        ]
+      })
+      .catch((error) => {
+        browserPromise = undefined;
+        throw error;
+      });
   }
   return browserPromise;
+}
+
+function normalizeChallengeId(value) {
+  if (!['string', 'number', 'boolean'].includes(typeof value)) return undefined;
+  const challengeId = String(value);
+  return challengeId.trim() ? challengeId : undefined;
+}
+
+function validateSubmittedUrl(value, fieldName, allowedHosts) {
+  if (typeof value !== 'string') {
+    throw new Error(`${fieldName} must be a string`);
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${fieldName} must be a valid http(s) URL`);
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`${fieldName} must use http or https`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(`${fieldName} must not include credentials`);
+  }
+  if (!allowedHosts.has(normalizeHost(parsed.hostname))) {
+    throw new Error(`${fieldName} host is not allowed`);
+  }
+
+  return parsed.toString();
 }
 
 function operatorUrl(challengeId) {
@@ -230,7 +284,8 @@ async function finishChallenge(state, payload) {
   }
 }
 
-async function solveChallenge({ challengeId, captchaUrl, callbackUrl }) {
+async function solveChallenge(state) {
+  const { challengeId, captchaUrl, callbackUrl } = state;
   logChallenge(challengeId, 'challenge accepted', {
     captchaUrl,
     callbackUrl
@@ -243,19 +298,10 @@ async function solveChallenge({ challengeId, captchaUrl, callbackUrl }) {
     locale: 'ru-RU',
     timezoneId: 'Europe/Moscow'
   });
+  state.context = context;
   const page = await context.newPage();
-  const state = {
-    challengeId,
-    captchaUrl,
-    callbackUrl,
-    page,
-    context,
-    createdAt: new Date(),
-    status: 'running',
-    tokenWaiters: new Set()
-  };
-
-  challenges.set(challengeId, state);
+  state.page = page;
+  state.status = 'running';
   page.on('response', (response) => captureTokenFromResponse(state, response));
 
   try {
@@ -315,28 +361,48 @@ solveApp.get('/healthz', (_req, res) => {
 });
 
 solveApp.post('/solve', (req, res) => {
-  const { challengeId, captchaUrl, callbackUrl } = req.body || {};
-  if (!challengeId || !captchaUrl || !callbackUrl) {
+  const body = req.body || {};
+  const challengeId = normalizeChallengeId(body.challengeId);
+  if (!challengeId || body.captchaUrl == null || body.callbackUrl == null) {
     res.status(400).json({ error: 'challengeId, captchaUrl and callbackUrl are required' });
     return;
   }
+
+  let captchaUrl;
+  let callbackUrl;
+  try {
+    captchaUrl = validateSubmittedUrl(body.captchaUrl, 'captchaUrl', config.captchaAllowedHosts);
+    callbackUrl = validateSubmittedUrl(body.callbackUrl, 'callbackUrl', config.callbackAllowedHosts);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+    return;
+  }
+
   if (challenges.has(challengeId)) {
     res.status(409).json({ error: 'challengeId is already running' });
     return;
   }
 
-  solveChallenge({ challengeId, captchaUrl, callbackUrl }).catch(async (error) => {
+  const state = {
+    challengeId,
+    captchaUrl,
+    callbackUrl,
+    createdAt: new Date(),
+    status: 'queued',
+    tokenWaiters: new Set()
+  };
+  challenges.set(challengeId, state);
+
+  solveChallenge(state).catch(async (error) => {
     logChallenge(challengeId, 'challenge failed outside solve flow', { error: error.message });
-    const state = challenges.get(challengeId);
-    if (state) {
-      await finishChallenge(state, { status: 'failed', error: error.message }).catch(() => undefined);
-      await state.context?.close().catch(() => undefined);
-    } else {
-      await postCallback(callbackUrl, { challengeId, status: 'failed', error: error.message }).catch(() => undefined);
-    }
+    await finishChallenge(state, { status: 'failed', error: error.message }).catch(() => undefined);
   });
 
   res.status(202).json({ challengeId, status: 'accepted', operatorUrl: operatorUrl(challengeId) });
+});
+
+operatorApp.get('/healthz', (_req, res) => {
+  res.json({ ok: true, challenges: challenges.size });
 });
 
 operatorApp.get('/operator/:challengeId', (req, res) => {
@@ -389,12 +455,29 @@ operatorApp.post('/operator/:challengeId/tap', async (req, res) => {
     res.status(404).json({ error: 'challenge not found' });
     return;
   }
+  if (!state.page) {
+    res.status(409).json({ error: 'challenge is not ready for operator input' });
+    return;
+  }
+  const normalizedX = Number(req.body?.x);
+  const normalizedY = Number(req.body?.y);
+  if (
+    !Number.isFinite(normalizedX) ||
+    !Number.isFinite(normalizedY) ||
+    normalizedX < 0 ||
+    normalizedX > 1 ||
+    normalizedY < 0 ||
+    normalizedY > 1
+  ) {
+    res.status(400).json({ error: 'x and y must be finite numbers between 0 and 1' });
+    return;
+  }
   const viewport = state.page.viewportSize() || { width: config.viewportWidth, height: config.viewportHeight };
-  const x = Math.max(0, Math.min(1, Number(req.body.x))) * viewport.width;
-  const y = Math.max(0, Math.min(1, Number(req.body.y))) * viewport.height;
+  const x = normalizedX * viewport.width;
+  const y = normalizedY * viewport.height;
   logChallenge(state.challengeId, 'operator tap received', {
-    normalizedX: req.body.x,
-    normalizedY: req.body.y,
+    normalizedX,
+    normalizedY,
     x,
     y,
     viewport

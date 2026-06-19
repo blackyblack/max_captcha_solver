@@ -61,7 +61,7 @@ On failure:
 
 ### `GET /healthz`
 
-Returns service health and active challenge count:
+Both listeners expose this endpoint and return service health with the active challenge count:
 
 ```json
 {
@@ -92,6 +92,8 @@ After changing `.env`, restart the service.
 Copy `.env.template` to `.env` and adjust values there. The service loads `.env` with `dotenv` on startup.
 
 `OPERATOR_VIEW_BASE_URL` should point at the public operator listener, for example `https://solver.example`, when operators open links from outside the host.
+
+`CAPTCHA_ALLOWED_HOSTS` and `CALLBACK_ALLOWED_HOSTS` are comma-separated host allowlists for submitted `captchaUrl` and `callbackUrl` values. The defaults are `id.vk.ru` for captcha URLs and `127.0.0.1,localhost,::1` for callback URLs. Submitted URLs must use `http` or `https` and must not include credentials.
 
 `CALLBACK_TIMEOUT_MS` limits callback delivery time. Callback failures and timeouts are logged, but the browser page, context, and challenge entry are still cleaned up.
 
