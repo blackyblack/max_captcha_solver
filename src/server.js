@@ -7,11 +7,15 @@ const { chromium } = require('playwright');
 const { notifyManualSolveRequired } = require('./notifications');
 
 const config = {
-  port: Number(process.env.PORT || 3000),
+  solvePort: Number(process.env.SOLVE_PORT || process.env.PORT || 3000),
+  solveHost: process.env.SOLVE_HOST || '127.0.0.1',
+  operatorPort: Number(process.env.OPERATOR_PORT || 3001),
+  operatorHost: process.env.OPERATOR_HOST || '0.0.0.0',
   autosolveDelayMs: Number(process.env.AUTOSOLVE_DELAY_MS || 3000),
   autosolveTimeoutMs: Number(process.env.AUTOSOLVE_TIMEOUT_MS || 15000),
   operatorTimeoutMs: Number(process.env.OPERATOR_TIMEOUT_MS || 180000),
   operatorViewBaseUrl: process.env.OPERATOR_VIEW_BASE_URL || '',
+  callbackTimeoutMs: Number(process.env.CALLBACK_TIMEOUT_MS || 10000),
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
   telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
   telegramNotifyTimeoutMs: Number(process.env.TELEGRAM_NOTIFY_TIMEOUT_MS || 5000),
@@ -27,8 +31,10 @@ const config = {
 
 process.env.DISPLAY = config.display;
 
-const app = express();
-app.use(express.json({ limit: '1mb' }));
+const solveApp = express();
+const operatorApp = express();
+solveApp.use(express.json({ limit: '1mb' }));
+operatorApp.use(express.json({ limit: '1mb' }));
 
 const challenges = new Map();
 let browserPromise;
@@ -56,7 +62,7 @@ function getBrowser() {
 
 function operatorUrl(challengeId) {
   const path = `/operator/${encodeURIComponent(challengeId)}`;
-  const baseUrl = config.operatorViewBaseUrl || `http://127.0.0.1:${config.port}`;
+  const baseUrl = config.operatorViewBaseUrl || `http://127.0.0.1:${config.operatorPort}`;
   return `${baseUrl.replace(/\/$/, '')}${path}`;
 }
 
@@ -64,6 +70,7 @@ async function postCallback(callbackUrl, body) {
   const response = await fetch(callbackUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
+    signal: AbortSignal.timeout(config.callbackTimeoutMs),
     body: JSON.stringify(body)
   });
 
@@ -71,6 +78,25 @@ async function postCallback(callbackUrl, body) {
     const text = await response.text().catch(() => '');
     throw new Error(`callback returned ${response.status}: ${text.slice(0, 500)}`);
   }
+}
+
+function jsonForInlineScript(value) {
+  return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (char) => {
+    switch (char) {
+      case '<':
+        return '\\u003c';
+      case '>':
+        return '\\u003e';
+      case '&':
+        return '\\u0026';
+      case '\u2028':
+        return '\\u2028';
+      case '\u2029':
+        return '\\u2029';
+      default:
+        return char;
+    }
+  });
 }
 
 function extractSuccessToken(payload) {
@@ -195,8 +221,11 @@ async function finishChallenge(state, payload) {
   try {
     await postCallback(state.callbackUrl, { challengeId: state.challengeId, ...payload });
     logChallenge(state.challengeId, 'callback posted', { status: payload.status });
+  } catch (error) {
+    logChallenge(state.challengeId, 'callback delivery failed', { error: error.message });
   } finally {
     await state.page?.close().catch(() => undefined);
+    await state.context?.close().catch(() => undefined);
     challenges.delete(state.challengeId);
   }
 }
@@ -281,11 +310,11 @@ async function solveChallenge({ challengeId, captchaUrl, callbackUrl }) {
   }
 }
 
-app.get('/healthz', (_req, res) => {
+solveApp.get('/healthz', (_req, res) => {
   res.json({ ok: true, challenges: challenges.size });
 });
 
-app.post('/solve', (req, res) => {
+solveApp.post('/solve', (req, res) => {
   const { challengeId, captchaUrl, callbackUrl } = req.body || {};
   if (!challengeId || !captchaUrl || !callbackUrl) {
     res.status(400).json({ error: 'challengeId, captchaUrl and callbackUrl are required' });
@@ -310,7 +339,7 @@ app.post('/solve', (req, res) => {
   res.status(202).json({ challengeId, status: 'accepted', operatorUrl: operatorUrl(challengeId) });
 });
 
-app.get('/operator/:challengeId', (req, res) => {
+operatorApp.get('/operator/:challengeId', (req, res) => {
   const state = challenges.get(req.params.challengeId);
   if (!state) {
     res.status(404).send('challenge not found');
@@ -319,13 +348,24 @@ app.get('/operator/:challengeId', (req, res) => {
 
   logChallenge(state.challengeId, 'operator view opened');
 
+  const challengeId = jsonForInlineScript(state.challengeId);
+  const status = jsonForInlineScript(state.status);
+  const screenshotPath = jsonForInlineScript(`/operator/${encodeURIComponent(state.challengeId)}/screenshot`);
+
   res.type('html').send(`<!doctype html>
-<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Captcha ${state.challengeId}</title>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title></title>
 <style>body{margin:0;background:#111;color:#eee;font-family:sans-serif}#bar{padding:8px}#screen{width:100%;touch-action:none;display:block}</style></head>
-<body><div id="bar">${state.challengeId}: <span id="status">${state.status}</span></div><img id="screen" src="/operator/${encodeURIComponent(state.challengeId)}/screenshot">
+<body><div id="bar"><span id="challenge"></span>: <span id="status"></span></div><img id="screen" alt="">
 <script>
-const id=${JSON.stringify(state.challengeId)}; const img=document.getElementById('screen');
-setInterval(()=>{ img.src='/operator/'+encodeURIComponent(id)+'/screenshot?t='+Date.now(); }, ${Math.max(500, config.screenshotIntervalMs)});
+const id=${challengeId};
+const status=${status};
+const screenshotPath=${screenshotPath};
+document.title='Captcha '+id;
+document.getElementById('challenge').textContent=id;
+document.getElementById('status').textContent=status;
+const img=document.getElementById('screen');
+img.src=screenshotPath;
+setInterval(()=>{ img.src=screenshotPath+'?t='+Date.now(); }, ${Math.max(500, config.screenshotIntervalMs)});
 img.addEventListener('click', async (event)=>{
   const rect=img.getBoundingClientRect();
   await fetch('/operator/'+encodeURIComponent(id)+'/tap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({x:(event.clientX-rect.left)/rect.width,y:(event.clientY-rect.top)/rect.height})});
@@ -333,7 +373,7 @@ img.addEventListener('click', async (event)=>{
 </script></body></html>`);
 });
 
-app.get('/operator/:challengeId/screenshot', async (req, res) => {
+operatorApp.get('/operator/:challengeId/screenshot', async (req, res) => {
   const state = challenges.get(req.params.challengeId);
   if (!state) {
     res.status(404).end();
@@ -343,7 +383,7 @@ app.get('/operator/:challengeId/screenshot', async (req, res) => {
   res.type('jpg').send(state.screenshot || Buffer.alloc(0));
 });
 
-app.post('/operator/:challengeId/tap', async (req, res) => {
+operatorApp.post('/operator/:challengeId/tap', async (req, res) => {
   const state = challenges.get(req.params.challengeId);
   if (!state) {
     res.status(404).json({ error: 'challenge not found' });
@@ -369,6 +409,10 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-app.listen(config.port, () => {
-  console.log(`captcha solver listening on :${config.port}`);
+solveApp.listen(config.solvePort, config.solveHost, () => {
+  console.log(`captcha solve API listening on ${config.solveHost}:${config.solvePort}`);
+});
+
+operatorApp.listen(config.operatorPort, config.operatorHost, () => {
+  console.log(`captcha operator API listening on ${config.operatorHost}:${config.operatorPort}`);
 });

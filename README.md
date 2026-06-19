@@ -12,9 +12,14 @@ npm start
 
 ## API
 
+The service exposes two HTTP listeners:
+
+- Solve API: `SOLVE_HOST:SOLVE_PORT`, defaults to `127.0.0.1:3000`. This listener is intended for local callers only and is not authenticated.
+- Operator API: `OPERATOR_HOST:OPERATOR_PORT`, defaults to `0.0.0.0:3001`. Operator routes require an active `challengeId` in the URL and are short lived.
+
 ### `POST /solve`
 
-Starts a challenge. `captchaUrl` must be fresh and unused.
+Starts a challenge on the solve API. `captchaUrl` must be fresh and unused.
 
 ```json
 {
@@ -86,9 +91,19 @@ After changing `.env`, restart the service.
 
 Copy `.env.template` to `.env` and adjust values there. The service loads `.env` with `dotenv` on startup.
 
+`OPERATOR_VIEW_BASE_URL` should point at the public operator listener, for example `https://solver.example`, when operators open links from outside the host.
+
+`CALLBACK_TIMEOUT_MS` limits callback delivery time. Callback failures and timeouts are logged, but the browser page, context, and challenge entry are still cleaned up.
+
 ## Docker
 
 ```sh
 docker build -t max-captcha-solver .
-docker run --rm -p 3000:3000 max-captcha-solver
+docker run --rm -p 3001:3001 max-captcha-solver
+```
+
+To access the solve API from the Docker host while keeping it host-local, publish it only on host loopback:
+
+```sh
+docker run --rm -p 127.0.0.1:3000:3000 -p 3001:3001 -e SOLVE_HOST=0.0.0.0 max-captcha-solver
 ```
