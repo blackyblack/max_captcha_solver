@@ -57,8 +57,6 @@ export async function notifyManualSolveRequired({
   config,
   log
 }: ManualSolveNotification): Promise<void> {
-  log(challengeId, 'operator notification required', { operatorUrl, reason });
-
   try {
     await notifyTelegram({ challengeId, operatorUrl, reason, config, log });
   } catch (error) {

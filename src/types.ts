@@ -38,6 +38,8 @@ export interface ChallengeState {
   lastScreenshotAt?: Date;
   lastScreenshotError?: string;
   operatorUrl?: string;
+  operatorPointerLastPoint?: RelativePoint;
+  operatorPointerPressed?: boolean;
   page?: Page;
   screenshot?: Buffer;
   screenshotTimer?: NodeJS.Timeout;

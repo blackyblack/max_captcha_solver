@@ -82,6 +82,58 @@ export function createOperatorService({
     state.screenshotTimer = setInterval(() => updateScreenshot(state), config.screenshotIntervalMs);
   }
 
+  async function releasePressedPointer(
+    state: ChallengeState,
+    point: Pick<RelativePointerAction, 'relativeX' | 'relativeY'>,
+    reason: string
+  ): Promise<void> {
+    if (!state.operatorPointerPressed) return;
+
+    log(state.challengeId, 'operator pointer release requested', { reason });
+    await performRelativePointerAction(state, {
+      action: 'up',
+      relativeX: point.relativeX,
+      relativeY: point.relativeY
+    });
+    state.operatorPointerPressed = false;
+    state.operatorPointerLastPoint = undefined;
+  }
+
+  async function processPointerAction(state: ChallengeState, pointerAction: RelativePointerAction): Promise<void> {
+    if (state.done) return;
+
+    if (pointerAction.action === 'down' && state.operatorPointerPressed && state.operatorPointerLastPoint) {
+      await releasePressedPointer(state, state.operatorPointerLastPoint, 'new-down');
+    } else if (pointerAction.action === 'tap' && state.operatorPointerPressed) {
+      await releasePressedPointer(state, pointerAction, 'tap-before-click');
+    }
+
+    if (pointerAction.action === 'up') {
+      if (!state.operatorPointerPressed) {
+        log(state.challengeId, 'operator pointer up ignored because no down is active');
+        return;
+      }
+
+      await releasePressedPointer(state, pointerAction, 'operator-up');
+      return;
+    }
+
+    await performRelativePointerAction(state, pointerAction);
+
+    if (pointerAction.action === 'down') {
+      state.operatorPointerPressed = true;
+      state.operatorPointerLastPoint = {
+        relativeX: pointerAction.relativeX,
+        relativeY: pointerAction.relativeY
+      };
+    } else if (pointerAction.action === 'move' && state.operatorPointerPressed) {
+      state.operatorPointerLastPoint = {
+        relativeX: pointerAction.relativeX,
+        relativeY: pointerAction.relativeY
+      };
+    }
+  }
+
   async function waitForOperator(state: ChallengeState, autosolveError: unknown): Promise<string> {
     if (state.token) {
       log(state.challengeId, 'token was captured during autosolve error handling');
@@ -114,7 +166,7 @@ export function createOperatorService({
     res.json({ ok: true, challenges: challenges.size });
   });
 
-  app.get('/operator/:challengeId', (req, res) => {
+  app.get('/operator/:challengeId', async (req, res) => {
     const state = challenges.get(req.params.challengeId);
     if (!state) {
       res.status(404).send('challenge not found');
@@ -122,6 +174,12 @@ export function createOperatorService({
     }
 
     log(state.challengeId, 'operator view opened');
+    if (state.status === 'operator_required' && state.page && state.operatorPointerPressed && state.operatorPointerLastPoint) {
+      await releasePressedPointer(state, state.operatorPointerLastPoint, 'operator-view-opened').catch((error) => {
+        log(state.challengeId, 'operator pointer refresh release failed', { error: errorMessage(error) });
+      });
+    }
+
     res.type('html').send(
       renderOperatorView({
         challengeId: state.challengeId,
@@ -162,7 +220,7 @@ export function createOperatorService({
     }
 
     try {
-      await performRelativePointerAction(state, pointerAction);
+      await processPointerAction(state, pointerAction);
       res.json({ ok: true });
     } catch (error) {
       log(state.challengeId, 'operator pointer action failed', { error: errorMessage(error) });
