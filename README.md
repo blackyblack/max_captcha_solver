@@ -34,7 +34,7 @@ Docker:
 
 ```sh
 docker build -t max-captcha-solver .
-docker run --rm -p 127.0.0.1:3000:3000 -p 3001:3001 max-captcha-solver
+docker run --rm --env-file .env -p 127.0.0.1:3000:3000 -p 3001:3001 max-captcha-solver
 ```
 
 This publishes the solve API only on host loopback and exposes the operator API on port `3001`.

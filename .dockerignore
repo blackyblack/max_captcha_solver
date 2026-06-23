@@ -1,0 +1,22 @@
+.git
+.agents
+.codex
+node_modules
+dist
+
+# Local runtime configuration and secrets
+.env
+.env.*
+!.env.template
+
+# Logs and temporary run artifacts
+*.log
+.tmp
+tmp
+artifacts
+screenshots
+
+# Test and browser tooling output
+coverage
+test-results
+playwright-report
