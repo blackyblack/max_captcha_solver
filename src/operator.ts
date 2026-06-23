@@ -161,8 +161,13 @@ export function createOperatorService({
       return;
     }
 
-    await performRelativePointerAction(state, pointerAction);
-    res.json({ ok: true });
+    try {
+      await performRelativePointerAction(state, pointerAction);
+      res.json({ ok: true });
+    } catch (error) {
+      log(state.challengeId, 'operator pointer action failed', { error: errorMessage(error) });
+      res.status(500).json({ error: 'operator action failed' });
+    }
   });
 
   return {
