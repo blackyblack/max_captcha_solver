@@ -1,6 +1,6 @@
 # MAX captcha solver
 
-Standalone service that solves VK ID `not_robot_captcha` challenges for MAX auth flows. It accepts a captcha URL, tries to click the challenge in Chromium, falls back to a short-lived operator page when needed, and posts the resulting `success_token` to a callback URL.
+Standalone service that solves VK ID `not_robot_captcha` challenges for MAX auth flows. It accepts a captcha URL, tries to click the challenge in Chromium, falls back to a short-lived operator page with tap and drag support when needed, and posts the resulting `success_token` to a callback URL.
 
 See [API.md](./API.md) for endpoint details.
 
@@ -125,7 +125,7 @@ Browser viewport height.
 
 `OPERATOR_SCREENSHOT_INTERVAL_MS`
 Default: `1000`.
-Operator page screenshot refresh interval.
+Operator page screenshot refresh interval. Lower values such as `250` improve feedback for slider captchas.
 
 Submitted `captchaUrl` and `callbackUrl` values must use `http` or `https`, must not contain credentials, and must pass their host allowlists.
 
