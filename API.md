@@ -79,15 +79,30 @@ Callback delivery uses `CALLBACK_TIMEOUT_MS`. Delivery failures are logged, but 
 
 `GET /operator/:challengeId/screenshot` returns the latest captcha screenshot as JPEG.
 
-`POST /operator/:challengeId/tap` clicks the browser page at a relative coordinate.
+`POST /operator/:challengeId/pointer` sends a browser pointer action. Use `tap` for simple clicks, or `down`, `move`, and `up` for live slider drags where the browser mouse button must stay pressed until the operator releases it.
 
 Request:
 
 ```json
 {
+  "action": "tap",
   "x": 0.5,
   "y": 0.5
 }
 ```
 
-`x` and `y` must be finite numbers from `0` to `1`.
+`action` must be `tap`, `down`, `move`, or `up`. `x` and `y` must be finite numbers from `0` to `1`.
+
+Slider drag sequence example:
+
+```json
+{ "action": "down", "x": 0.35, "y": 0.62 }
+```
+
+```json
+{ "action": "move", "x": 0.72, "y": 0.62 }
+```
+
+```json
+{ "action": "up", "x": 0.72, "y": 0.62 }
+```

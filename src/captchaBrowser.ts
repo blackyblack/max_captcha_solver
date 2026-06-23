@@ -1,6 +1,6 @@
 import { chromium, type Browser, type Locator, type Page, type Response } from 'playwright';
 
-import type { ChallengeLog, ChallengeState, RelativeTap, SolverConfig, WaitForToken } from './types';
+import type { ChallengeLog, ChallengeState, RelativePointerAction, SolverConfig, WaitForToken } from './types';
 import { errorMessage } from './types';
 
 interface CaptchaBrowserOptions {
@@ -163,14 +163,18 @@ export function createCaptchaBrowser({ config, log, waitForToken }: CaptchaBrows
     }
   }
 
-  async function clickAtRelativePosition(state: ChallengeState, { relativeX, relativeY }: RelativeTap): Promise<void> {
+  async function performRelativePointerAction(
+    state: ChallengeState,
+    { action, relativeX, relativeY }: RelativePointerAction
+  ): Promise<void> {
     if (!state.page) throw new Error('challenge page is not open');
 
     const viewport = state.page.viewportSize() || { width: config.viewportWidth, height: config.viewportHeight };
     const x = relativeX * viewport.width;
     const y = relativeY * viewport.height;
 
-    log(state.challengeId, 'operator tap received', {
+    log(state.challengeId, 'operator pointer action received', {
+      action,
       relativeX,
       relativeY,
       x,
@@ -178,7 +182,14 @@ export function createCaptchaBrowser({ config, log, waitForToken }: CaptchaBrows
       viewport
     });
 
-    await state.page.mouse.click(x, y, { delay: 80 });
+    await state.page.mouse.move(x, y);
+    if (action === 'tap') {
+      await state.page.mouse.click(x, y, { delay: 80 });
+    } else if (action === 'down') {
+      await state.page.mouse.down();
+    } else if (action === 'up') {
+      await state.page.mouse.up();
+    }
   }
 
   async function closeBrowser(): Promise<void> {
@@ -188,8 +199,8 @@ export function createCaptchaBrowser({ config, log, waitForToken }: CaptchaBrows
 
   return {
     closeBrowser,
-    clickAtRelativePosition,
     openChallengePage,
+    performRelativePointerAction,
     tryAutosolve,
     updateScreenshot
   };

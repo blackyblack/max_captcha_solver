@@ -38,6 +38,8 @@ export interface ChallengeState {
   lastScreenshotAt?: Date;
   lastScreenshotError?: string;
   operatorUrl?: string;
+  operatorPointerLastPoint?: RelativePoint;
+  operatorPointerPressed?: boolean;
   page?: Page;
   screenshot?: Buffer;
   screenshotTimer?: NodeJS.Timeout;
@@ -52,9 +54,13 @@ export type ChallengeLog = (challengeId: string, message: string, details?: LogD
 
 export type WaitForToken = (state: ChallengeState, timeoutMs: number) => Promise<string>;
 
-export interface RelativeTap {
+export interface RelativePoint {
   relativeX: number;
   relativeY: number;
+}
+
+export interface RelativePointerAction extends RelativePoint {
+  action: 'tap' | 'down' | 'move' | 'up';
 }
 
 export interface FinishPayload {

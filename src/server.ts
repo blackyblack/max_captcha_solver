@@ -113,7 +113,7 @@ const operatorService = createOperatorService({
   log: logChallenge,
   waitForToken,
   updateScreenshot: captchaBrowser.updateScreenshot,
-  clickAtRelativePosition: captchaBrowser.clickAtRelativePosition
+  performRelativePointerAction: captchaBrowser.performRelativePointerAction
 });
 
 async function postCallback(callbackUrl: string, body: Record<string, unknown>): Promise<void> {
