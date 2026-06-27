@@ -12,13 +12,8 @@ RUN npm run build \
     && npm prune --omit=dev
 
 ENV NODE_ENV=production \
-    SOLVE_PORT=3000 \
     SOLVE_HOST=0.0.0.0 \
-    OPERATOR_PORT=3001 \
-    OPERATOR_HOST=0.0.0.0 \
-    CAPTCHA_ALLOWED_HOSTS=id.vk.ru \
-    CALLBACK_ALLOWED_HOSTS=127.0.0.1,localhost,::1,host.docker.internal \
     DISPLAY=:99
 
 EXPOSE 3000 3001
-CMD ["bash", "-lc", "Xvfb ${DISPLAY} -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 & node dist/server.js"]
+CMD ["bash", "-lc", ": \"${DISPLAY:=:99}\"; export DISPLAY; display_number=\"${DISPLAY#*:}\"; display_number=\"${display_number%%.*}\"; Xvfb \"$DISPLAY\" -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 & xvfb_pid=$!; for i in $(seq 1 50); do kill -0 \"$xvfb_pid\" 2>/dev/null || { cat /tmp/xvfb.log >&2; exit 1; }; [ -S \"/tmp/.X11-unix/X${display_number}\" ] && break; sleep 0.1; done; [ -S \"/tmp/.X11-unix/X${display_number}\" ] || { cat /tmp/xvfb.log >&2; exit 1; }; node dist/server.js"]
